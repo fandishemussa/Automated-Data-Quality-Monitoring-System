@@ -44,11 +44,11 @@ def calculate_severity(check_type, status, failure_rate):
     return "MEDIUM"
 def safe_text(value):
     if value is None:
-        return None
+        return "NULL"
 
     try:
         if pd.isna(value):
-            return None
+            return "NULL"
     except Exception:
         pass
 
@@ -68,12 +68,16 @@ def make_issue_details(
     if failed_df is None or failed_df.empty:
         return details
 
-    possible_id_columns = [
-        "id",
-        "customer_id",
-        "order_id",
-        "product_id"
-    ]
+    id_columns_by_dataset = {
+        "customers": ["customer_id", "id"],
+        "orders": ["order_id", "id", "customer_id"],
+        "products": ["product_id", "id"],
+    }
+
+    possible_id_columns = id_columns_by_dataset.get(
+        dataset_name,
+        ["id", "customer_id", "order_id", "product_id"]
+    )
 
     for index, row in failed_df.head(max_examples).iterrows():
         row_identifier = f"row_index={index}"
@@ -93,7 +97,7 @@ def make_issue_details(
             "check_type": check_type,
             "column_name": column_name,
             "row_identifier": row_identifier,
-            "bad_value": safe_text(row[column_name]) if column_name in failed_df.columns else None,
+            "bad_value": safe_text(row[column_name]) if column_name in failed_df.columns else "NULL",
             "reason": reason,
             "sample_row": str(sample_row)
         })
@@ -327,29 +331,48 @@ def check_range_rules(df, dataset_name, range_checks):
             continue
 
         failed_mask = pd.Series(False, index=df.index)
+        reasons = []
 
         # String length checks
         if "min_length" in rules:
             failed_mask = failed_mask | (df[column].astype(str).str.len() < rules["min_length"])
+            reasons.append(f"minimum length must be {rules['min_length']}")
 
         if "max_length" in rules:
             failed_mask = failed_mask | (df[column].astype(str).str.len() > rules["max_length"])
+            reasons.append(f"maximum length must be {rules['max_length']}")
 
         # Numeric range checks
+        numeric_values = pd.to_numeric(df[column], errors="coerce")
+
         if "min" in rules:
-            failed_mask = failed_mask | (pd.to_numeric(df[column], errors="coerce") < rules["min"])
+            failed_mask = failed_mask | (numeric_values < rules["min"])
+            reasons.append(f"minimum value must be {rules['min']}")
 
         if "max" in rules:
-            failed_mask = failed_mask | (pd.to_numeric(df[column], errors="coerce") > rules["max"])
+            failed_mask = failed_mask | (numeric_values > rules["max"])
+            reasons.append(f"maximum value must be {rules['max']}")
 
         # Date max today check
         if rules.get("max_date") == "today":
             dates = pd.to_datetime(df[column], errors="coerce")
             today = pd.Timestamp.now().normalize()
             failed_mask = failed_mask | (dates > today)
+            reasons.append("date cannot be in the future")
 
-        failed_rows = failed_mask.sum()
+        failed_df = df[failed_mask]
+        failed_rows = len(failed_df)
         status = "PASS" if failed_rows == 0 else "FAIL"
+
+        reason_text = f"{column} failed range rule: " + ", ".join(reasons)
+
+        details = make_issue_details(
+            failed_df,
+            dataset_name,
+            "range_check",
+            column,
+            reason_text
+        )
 
         results.append(
             build_result(
@@ -359,13 +382,12 @@ def check_range_rules(df, dataset_name, range_checks):
                 str(rules),
                 total_rows,
                 failed_rows,
-                status
+                status,
+                details
             )
         )
 
     return results
-
-
 def check_categorical_rules(df, dataset_name, categorical_checks):
     results = []
     total_rows = len(df)
@@ -387,12 +409,20 @@ def check_categorical_rules(df, dataset_name, categorical_checks):
 
         allowed_values = rule_config.get("allowed_values", [])
 
-        invalid_rows = df[
+        failed_df = df[
             df[column].notnull() & ~df[column].isin(allowed_values)
         ]
 
-        failed_rows = len(invalid_rows)
+        failed_rows = len(failed_df)
         status = "PASS" if failed_rows == 0 else "FAIL"
+
+        details = make_issue_details(
+            failed_df,
+            dataset_name,
+            "categorical_check",
+            column,
+            f"{column} must be one of: {allowed_values}"
+        )
 
         results.append(
             build_result(
@@ -402,13 +432,12 @@ def check_categorical_rules(df, dataset_name, categorical_checks):
                 "allowed_values",
                 total_rows,
                 failed_rows,
-                status
+                status,
+                details
             )
         )
 
     return results
-
-
 def check_freshness_rules(df, dataset_name, freshness_rules):
     results = []
     total_rows = len(df)
