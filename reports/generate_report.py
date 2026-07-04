@@ -1,6 +1,9 @@
-import pandas as pd
 from sqlalchemy import text
 from data_sources.postgres_connector import create_postgres_engine
+from utils.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def calculate_run_summary(results):
@@ -34,9 +37,12 @@ def calculate_run_summary(results):
 
 
 def save_results_to_postgres(results):
+    logger.info("Saving %s data quality result(s) to PostgreSQL.", len(results))
+
     engine = create_postgres_engine()
 
     summary = calculate_run_summary(results)
+    logger.info("Calculated run summary: %s", summary)
 
     with engine.begin() as connection:
         run_insert_query = text("""
@@ -60,6 +66,7 @@ def save_results_to_postgres(results):
         """)
 
         run_id = connection.execute(run_insert_query, summary).scalar()
+        logger.info("Created data quality run record. Run ID: %s", run_id)
 
         result_insert_query = text("""
             INSERT INTO data_quality_results (
@@ -132,6 +139,13 @@ def save_results_to_postgres(results):
                 result_insert_query,
                 result_params
             ).scalar()
+            logger.debug(
+                "Saved result %s for dataset=%s check_type=%s status=%s.",
+                result_id,
+                result_params["dataset_name"],
+                result_params["check_type"],
+                result_params["status"],
+            )
 
             for detail in result.get("details", []):
                 detail_params = {
@@ -148,7 +162,7 @@ def save_results_to_postgres(results):
 
                 connection.execute(detail_insert_query, detail_params)
 
-    print(f"Data quality run saved successfully. Run ID: {run_id}")
+    logger.info("Data quality run saved successfully. Run ID: %s", run_id)
     return {
         "run_id": run_id,
         "summary": summary

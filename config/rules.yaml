@@ -147,12 +147,14 @@ global_rules:
 
   data_drift_detection:
     enabled: true
+    mean_change_threshold_percent: 20
     statistical_tests:
       - chi_square
       - kolmogorov_smirnov
 
   anomaly_detection:
     enabled: true
+    z_score_threshold: 3
     methods:
       - isolation_forest
       - z_score
@@ -181,5 +183,3 @@ quality_thresholds:
   critical: 95
   warning: 85
   acceptable: 75
-      
-        
