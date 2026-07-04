@@ -85,7 +85,63 @@ def load_alerts():
         """,
         "data_quality_alerts",
     )
+def update_alert(alert_id, alert_type, severity, message, is_resolved):
+    """Update alert information from the dashboard."""
 
+    engine = create_postgres_engine()
+
+    query = text("""
+        UPDATE data_quality_alerts
+        SET
+            alert_type = :alert_type,
+            severity = :severity,
+            message = :message,
+            is_resolved = :is_resolved
+        WHERE id = :alert_id;
+    """)
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                query,
+                {
+                    "alert_id": int(alert_id),
+                    "alert_type": alert_type,
+                    "severity": severity,
+                    "message": message,
+                    "is_resolved": bool(is_resolved),
+                },
+            )
+
+        return True
+
+    except SQLAlchemyError as exc:
+        st.error("Could not update alert.")
+        st.caption(str(exc))
+        return False
+
+
+def resolve_alert(alert_id):
+    """Mark an alert as resolved."""
+
+    engine = create_postgres_engine()
+
+    query = text("""
+        UPDATE data_quality_alerts
+        SET is_resolved = TRUE
+        WHERE id = :alert_id;
+    """)
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(query, {"alert_id": int(alert_id)})
+
+        return True
+
+    except SQLAlchemyError as exc:
+        st.error("Could not resolve alert.")
+        st.caption(str(exc))
+        return False
 
 def load_profile_results():
     return load_query(
@@ -626,57 +682,142 @@ def render_alerts(context):
 
     selected_alerts = context["filtered_alerts"].copy()
 
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Total Alerts", len(selected_alerts))
+    metric_cols[1].metric("Open Alerts", unresolved_alert_count(selected_alerts))
+    metric_cols[2].metric(
+        "Resolved Alerts",
+        max(len(selected_alerts) - unresolved_alert_count(selected_alerts), 0),
+    )
+
     if selected_alerts.empty:
         st.info("No alerts found for the selected run.")
         return
 
-    alert_severity_options = ["All"] + unique_options(selected_alerts, "severity")
-    selected_alert_severity = st.selectbox(
-        "Filter alerts by severity",
-        options=alert_severity_options,
-        key=f"alert_severity_filter_{context['selected_run_id']}",
-    )
-    selected_alerts = filter_by_value(
-        selected_alerts,
-        "severity",
-        selected_alert_severity,
-    )
-
-    open_alerts = filter_unresolved_alerts(selected_alerts)
-    resolved_alerts = filter_resolved_alerts(selected_alerts)
-
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Total Alerts", len(selected_alerts))
-    metric_cols[1].metric("Open Alerts", len(open_alerts))
-    metric_cols[2].metric("Resolved Alerts", len(resolved_alerts))
-
-    tabs = st.tabs(["Open Alerts", "Resolved Alerts", "All Alerts"])
+    tabs = st.tabs(["All Alerts", "Open Alerts", "Resolved Alerts", "Edit Alert"])
 
     with tabs[0]:
-        render_alert_resolution_cards(open_alerts)
-
-    with tabs[1]:
-        show_dataframe(
-            resolved_alerts,
-            columns=[
-                "id",
-                "run_id",
-                "alert_type",
-                "severity",
-                "message",
-                "is_resolved",
-                "created_at",
-            ],
-            empty_message="No resolved alerts for this selection.",
-        )
-
-    with tabs[2]:
         show_dataframe(
             selected_alerts,
-            empty_message="No alerts found for this selection.",
+            empty_message="No alerts found for the selected run.",
         )
 
+    with tabs[1]:
+        open_alerts = filter_unresolved_alerts(selected_alerts)
 
+        if open_alerts.empty:
+            st.success("No open alerts for this selection.")
+        else:
+            show_dataframe(open_alerts)
+
+            st.subheader("Quick Resolve")
+
+            alert_ids = open_alerts["id"].tolist()
+
+            selected_resolve_id = st.selectbox(
+                "Select alert to resolve",
+                options=alert_ids,
+                key="resolve_alert_id",
+            )
+
+            if st.button("Mark selected alert as resolved"):
+                if resolve_alert(selected_resolve_id):
+                    st.success(f"Alert {selected_resolve_id} marked as resolved.")
+                    st.rerun()
+
+    with tabs[2]:
+        if "is_resolved" not in selected_alerts.columns:
+            st.info("Alert resolution column is not available.")
+        else:
+            resolved_values = selected_alerts["is_resolved"].fillna(False)
+
+            if resolved_values.dtype == object:
+                resolved_mask = resolved_values.astype(str).str.lower().isin(
+                    ["true", "1", "yes"]
+                )
+            else:
+                resolved_mask = resolved_values == True
+
+            resolved_alerts = selected_alerts[resolved_mask]
+
+            show_dataframe(
+                resolved_alerts,
+                empty_message="No resolved alerts for this selection.",
+            )
+
+    with tabs[3]:
+        st.subheader("Edit Alert Data")
+
+        if "id" not in selected_alerts.columns:
+            st.warning("Cannot edit alerts because the `id` column is missing.")
+            return
+
+        alert_ids = selected_alerts["id"].tolist()
+
+        selected_alert_id = st.selectbox(
+            "Select Alert ID",
+            options=alert_ids,
+            key="edit_alert_id",
+        )
+
+        alert_row = selected_alerts[
+            selected_alerts["id"] == selected_alert_id
+        ].iloc[0]
+
+        severity_options = [
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "INFO",
+            "NONE",
+        ]
+
+        current_severity = str(alert_row.get("severity", "MEDIUM")).upper()
+
+        if current_severity not in severity_options:
+            severity_options.append(current_severity)
+
+        current_resolved = alert_row.get("is_resolved", False)
+
+        if isinstance(current_resolved, str):
+            current_resolved = current_resolved.lower() in ["true", "1", "yes"]
+
+        with st.form("edit_alert_form"):
+            alert_type = st.text_input(
+                "Alert Type",
+                value=str(alert_row.get("alert_type", "")),
+            )
+
+            severity = st.selectbox(
+                "Severity",
+                options=severity_options,
+                index=severity_options.index(current_severity),
+            )
+
+            message = st.text_area(
+                "Message",
+                value=str(alert_row.get("message", "")),
+                height=140,
+            )
+
+            is_resolved = st.checkbox(
+                "Resolved",
+                value=bool(current_resolved),
+            )
+
+            submitted = st.form_submit_button("Save Alert Changes")
+
+            if submitted:
+                if update_alert(
+                    alert_id=selected_alert_id,
+                    alert_type=alert_type,
+                    severity=severity,
+                    message=message,
+                    is_resolved=is_resolved,
+                ):
+                    st.success(f"Alert {selected_alert_id} updated successfully.")
+                    st.rerun()
 def render_data_profiling(context):
     st.header("Data Profiling")
     show_dataframe(
