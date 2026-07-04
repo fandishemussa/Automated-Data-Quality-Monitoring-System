@@ -34,7 +34,19 @@ def load_quality_results():
     query = """
         SELECT *
         FROM data_quality_results
-        ORDER BY run_time DESC;
+        ORDER BY id DESC;
+    """
+
+    return pd.read_sql(query, engine)
+
+
+def load_issue_details():
+    engine = create_postgres_engine()
+
+    query = """
+        SELECT *
+        FROM data_quality_issue_details
+        ORDER BY id DESC;
     """
 
     return pd.read_sql(query, engine)
@@ -44,6 +56,7 @@ st.title("Automated Data Quality Monitoring Dashboard")
 
 runs_df = load_quality_runs()
 results_df = load_quality_results()
+details_df = load_issue_details()
 
 if runs_df.empty:
     st.warning("No data quality runs found. Run `python main.py` first.")
@@ -87,8 +100,11 @@ else:
     )
 
     filtered_results = results_df[results_df["run_id"] == selected_run_id]
+    filtered_details = details_df[details_df["run_id"] == selected_run_id]
 
-    datasets = ["All"] + sorted(filtered_results["dataset_name"].dropna().unique().tolist())
+    datasets = ["All"] + sorted(
+        filtered_results["dataset_name"].dropna().unique().tolist()
+    )
 
     selected_dataset = st.selectbox(
         "Select Dataset",
@@ -100,11 +116,18 @@ else:
             filtered_results["dataset_name"] == selected_dataset
         ]
 
+        filtered_details = filtered_details[
+            filtered_details["dataset_name"] == selected_dataset
+        ]
+
     st.divider()
 
     st.subheader("🧪 Check Results")
 
-    st.dataframe(filtered_results, width="stretch")
+    if filtered_results.empty:
+        st.info("No check results found for this selection.")
+    else:
+        st.dataframe(filtered_results, width="stretch")
 
     st.subheader("❌ Failed Checks")
 
@@ -123,6 +146,37 @@ else:
         st.success("No critical issues for this selection.")
     else:
         st.dataframe(critical_df, width="stretch")
+
+    st.divider()
+
+    st.subheader("🔍 Issue Details / Bad Row Examples")
+
+    if filtered_details.empty:
+        st.success("No bad-row examples found for this selection.")
+    else:
+        detail_columns = [
+            "dataset_name",
+            "check_type",
+            "column_name",
+            "row_identifier",
+            "bad_value",
+            "reason",
+            "sample_row",
+            "created_at"
+        ]
+
+        available_detail_columns = [
+            col for col in detail_columns
+            if col in filtered_details.columns
+        ]
+
+        st.dataframe(
+            filtered_details[available_detail_columns],
+            width="stretch"
+        )
+
+        with st.expander("View raw issue details"):
+            st.dataframe(filtered_details, width="stretch")
 
     st.divider()
 
