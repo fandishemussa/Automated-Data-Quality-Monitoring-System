@@ -1,8 +1,14 @@
 from sqlalchemy import text
 from data_sources.postgres_connector import create_postgres_engine
+from utils.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def create_alerts_for_run(run_id, summary):
+    logger.info("Evaluating alerts for run %s.", run_id)
+
     alerts = []
 
     critical_checks = summary.get("critical_checks", 0)
@@ -34,7 +40,7 @@ def create_alerts_for_run(run_id, summary):
         })
 
     if not alerts:
-        print("No alerts created. Data quality looks good.")
+        logger.info("No alerts created for run %s. Data quality looks good.", run_id)
         return []
 
     engine = create_postgres_engine()
@@ -57,6 +63,12 @@ def create_alerts_for_run(run_id, summary):
     with engine.begin() as connection:
         for alert in alerts:
             connection.execute(insert_query, alert)
+            logger.warning(
+                "Created %s alert for run %s: %s",
+                alert["severity"],
+                run_id,
+                alert["message"],
+            )
 
-    print(f" {len(alerts)} alert(s) created for run {run_id}.")
+    logger.info("%s alert(s) created for run %s.", len(alerts), run_id)
     return alerts
