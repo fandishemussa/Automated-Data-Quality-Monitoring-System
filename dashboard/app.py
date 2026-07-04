@@ -140,19 +140,36 @@ def filter_details_by_results(details_df, results_df):
     return details_df
 
 
-def filter_unresolved_alerts(alerts_df):
-    """Return unresolved alerts while tolerating boolean/string DB values."""
+def alert_resolved_mask(alerts_df):
+    """Return a boolean mask for resolved alerts across bool/string DB values."""
 
     if alerts_df.empty or "is_resolved" not in alerts_df.columns:
-        return alerts_df
+        return pd.Series(False, index=alerts_df.index)
 
     resolved_values = alerts_df["is_resolved"].fillna(False)
 
     if resolved_values.dtype == object:
-        resolved_mask = resolved_values.astype(str).str.lower().isin(["true", "1", "yes"])
-        return alerts_df[~resolved_mask]
+        return resolved_values.astype(str).str.lower().isin(["true", "1", "yes"])
 
-    return alerts_df[resolved_values == False]
+    return resolved_values.astype(bool)
+
+
+def filter_unresolved_alerts(alerts_df):
+    """Return unresolved alerts while tolerating boolean/string DB values."""
+
+    if alerts_df.empty:
+        return alerts_df
+
+    return alerts_df[~alert_resolved_mask(alerts_df)]
+
+
+def filter_resolved_alerts(alerts_df):
+    """Return resolved alerts while tolerating boolean/string DB values."""
+
+    if alerts_df.empty:
+        return alerts_df
+
+    return alerts_df[alert_resolved_mask(alerts_df)]
 
 
 def unresolved_alert_count(alerts_df):
@@ -435,6 +452,66 @@ def show_dataframe(df, columns=None, empty_message="No records found."):
     st.dataframe(df, width="stretch", hide_index=True)
 
 
+def resolve_alert(alert_id):
+    """Mark a data quality alert as resolved in PostgreSQL."""
+
+    engine = create_postgres_engine()
+    query = text(
+        """
+        UPDATE data_quality_alerts
+        SET is_resolved = TRUE
+        WHERE id = :alert_id;
+        """
+    )
+
+    try:
+        with engine.begin() as connection:
+            result = connection.execute(query, {"alert_id": int(alert_id)})
+        return result.rowcount > 0
+    except SQLAlchemyError as exc:
+        st.error("Could not resolve the alert. Please check the database connection.")
+        st.caption(str(exc))
+        return False
+
+
+def render_alert_resolution_cards(open_alerts):
+    """Render one-click resolution controls for unresolved alerts."""
+
+    if open_alerts.empty:
+        st.success("No open alerts for this selection.")
+        return
+
+    if "id" not in open_alerts.columns:
+        st.warning("Alert IDs are missing, so alerts cannot be resolved from the dashboard.")
+        return
+
+    display_columns = [
+        "id",
+        "run_id",
+        "alert_type",
+        "severity",
+        "message",
+        "created_at",
+    ]
+    show_dataframe(open_alerts, columns=display_columns)
+
+    st.markdown("#### Resolve Open Alerts")
+
+    for _, alert in open_alerts.iterrows():
+        alert_id = int(alert["id"])
+        alert_type = alert.get("alert_type", "Unknown alert")
+        severity = alert.get("severity", "UNKNOWN")
+        message = alert.get("message", "")
+
+        with st.expander(f"Alert #{alert_id} | {severity} | {alert_type}"):
+            st.write(message)
+
+            if st.button("Mark as resolved", key=f"resolve_alert_{alert_id}"):
+                if resolve_alert(alert_id):
+                    st.success(f"Alert #{alert_id} marked as resolved.")
+                    st.rerun()
+
+
 def render_overview(context):
     st.header("Overview")
     render_metrics(context["latest_run"], context["latest_alerts_df"])
@@ -547,19 +624,57 @@ def render_issue_details(context):
 def render_alerts(context):
     st.header("Alerts")
 
-    selected_alerts = context["filtered_alerts"]
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Total Alerts", len(selected_alerts))
-    metric_cols[1].metric("Open Alerts", unresolved_alert_count(selected_alerts))
-    metric_cols[2].metric(
-        "Resolved Alerts",
-        max(len(selected_alerts) - unresolved_alert_count(selected_alerts), 0),
+    selected_alerts = context["filtered_alerts"].copy()
+
+    if selected_alerts.empty:
+        st.info("No alerts found for the selected run.")
+        return
+
+    alert_severity_options = ["All"] + unique_options(selected_alerts, "severity")
+    selected_alert_severity = st.selectbox(
+        "Filter alerts by severity",
+        options=alert_severity_options,
+        key=f"alert_severity_filter_{context['selected_run_id']}",
+    )
+    selected_alerts = filter_by_value(
+        selected_alerts,
+        "severity",
+        selected_alert_severity,
     )
 
-    show_dataframe(
-        selected_alerts,
-        empty_message="No alerts found for the selected run.",
-    )
+    open_alerts = filter_unresolved_alerts(selected_alerts)
+    resolved_alerts = filter_resolved_alerts(selected_alerts)
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Total Alerts", len(selected_alerts))
+    metric_cols[1].metric("Open Alerts", len(open_alerts))
+    metric_cols[2].metric("Resolved Alerts", len(resolved_alerts))
+
+    tabs = st.tabs(["Open Alerts", "Resolved Alerts", "All Alerts"])
+
+    with tabs[0]:
+        render_alert_resolution_cards(open_alerts)
+
+    with tabs[1]:
+        show_dataframe(
+            resolved_alerts,
+            columns=[
+                "id",
+                "run_id",
+                "alert_type",
+                "severity",
+                "message",
+                "is_resolved",
+                "created_at",
+            ],
+            empty_message="No resolved alerts for this selection.",
+        )
+
+    with tabs[2]:
+        show_dataframe(
+            selected_alerts,
+            empty_message="No alerts found for this selection.",
+        )
 
 
 def render_data_profiling(context):
