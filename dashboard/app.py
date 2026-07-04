@@ -82,7 +82,7 @@ else:
 
     st.divider()
 
-    st.subheader("📈 Quality Score Trend")
+    st.subheader("Quality Score Trend")
 
     trend_df = runs_df.sort_values("run_id")[["run_id", "quality_score"]]
     trend_df = trend_df.set_index("run_id")
@@ -91,7 +91,7 @@ else:
 
     st.divider()
 
-    st.subheader("📌 Filters")
+    st.subheader("Filters")
 
     selected_run_id = st.selectbox(
         "Select Run ID",
@@ -122,14 +122,14 @@ else:
 
     st.divider()
 
-    st.subheader("🧪 Check Results")
+    st.subheader(" Check Results")
 
     if filtered_results.empty:
         st.info("No check results found for this selection.")
     else:
         st.dataframe(filtered_results, width="stretch")
 
-    st.subheader("❌ Failed Checks")
+    st.subheader("Failed Checks")
 
     failed_df = filtered_results[filtered_results["status"] == "FAIL"]
 
@@ -138,7 +138,7 @@ else:
     else:
         st.dataframe(failed_df, width="stretch")
 
-    st.subheader("🚨 Critical Issues")
+    st.subheader("Critical Issues")
 
     critical_df = filtered_results[filtered_results["severity"] == "CRITICAL"]
 
@@ -149,7 +149,7 @@ else:
 
     st.divider()
 
-    st.subheader("🔍 Issue Details / Bad Row Examples")
+    st.subheader("Issue Details / Bad Row Examples")
 
     if filtered_details.empty:
         st.success("No bad-row examples found for this selection.")
@@ -180,7 +180,7 @@ else:
 
     st.divider()
 
-    st.subheader("📊 Issues by Severity")
+    st.subheader("Issues by Severity")
 
     if "severity" in filtered_results.columns and not filtered_results.empty:
         severity_df = filtered_results["severity"].value_counts().reset_index()
@@ -193,6 +193,6 @@ else:
 
     st.divider()
 
-    st.subheader("📚 Run History")
+    st.subheader("Run History")
 
     st.dataframe(runs_df, width="stretch")
