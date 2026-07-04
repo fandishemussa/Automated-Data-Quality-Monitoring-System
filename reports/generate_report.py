@@ -31,6 +31,8 @@ def calculate_run_summary(results):
     }
 
 
+
+
 def save_results_to_postgres(results):
     engine = create_postgres_engine()
 
@@ -59,10 +61,61 @@ def save_results_to_postgres(results):
 
         run_id = connection.execute(run_insert_query, summary).scalar()
 
-        rows = []
+        result_insert_query = text("""
+            INSERT INTO data_quality_results (
+                run_id,
+                dataset_name,
+                check_type,
+                column_name,
+                rule,
+                total_rows,
+                failed_rows,
+                failure_rate,
+                status,
+                severity
+            )
+            VALUES (
+                :run_id,
+                :dataset_name,
+                :check_type,
+                :column_name,
+                :rule,
+                :total_rows,
+                :failed_rows,
+                :failure_rate,
+                :status,
+                :severity
+            )
+            RETURNING id
+        """)
+
+        detail_insert_query = text("""
+            INSERT INTO data_quality_issue_details (
+                run_id,
+                result_id,
+                dataset_name,
+                check_type,
+                column_name,
+                row_identifier,
+                bad_value,
+                reason,
+                sample_row
+            )
+            VALUES (
+                :run_id,
+                :result_id,
+                :dataset_name,
+                :check_type,
+                :column_name,
+                :row_identifier,
+                :bad_value,
+                :reason,
+                :sample_row
+            )
+        """)
 
         for result in results:
-            rows.append({
+            result_params = {
                 "run_id": run_id,
                 "dataset_name": result.get("dataset_name"),
                 "check_type": result.get("check_type"),
@@ -73,15 +126,26 @@ def save_results_to_postgres(results):
                 "failure_rate": float(result.get("failure_rate", 0)),
                 "status": result.get("status"),
                 "severity": result.get("severity", "NONE"),
-            })
+            }
 
-        df = pd.DataFrame(rows)
+            result_id = connection.execute(
+                result_insert_query,
+                result_params
+            ).scalar()
 
-        df.to_sql(
-            "data_quality_results",
-            connection,
-            if_exists="append",
-            index=False
-        )
+            for detail in result.get("details", []):
+                detail_params = {
+                    "run_id": run_id,
+                    "result_id": result_id,
+                    "dataset_name": detail.get("dataset_name"),
+                    "check_type": detail.get("check_type"),
+                    "column_name": detail.get("column_name"),
+                    "row_identifier": detail.get("row_identifier"),
+                    "bad_value": detail.get("bad_value"),
+                    "reason": detail.get("reason"),
+                    "sample_row": detail.get("sample_row"),
+                }
+
+                connection.execute(detail_insert_query, detail_params)
 
     print(f"Data quality run saved successfully. Run ID: {run_id}")

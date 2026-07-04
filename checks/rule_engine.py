@@ -42,6 +42,63 @@ def calculate_severity(check_type, status, failure_rate):
         return "LOW"
 
     return "MEDIUM"
+def safe_text(value):
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    return str(value)
+
+
+def make_issue_details(
+    failed_df,
+    dataset_name,
+    check_type,
+    column_name,
+    reason,
+    max_examples=5
+):
+    details = []
+
+    if failed_df is None or failed_df.empty:
+        return details
+
+    possible_id_columns = [
+        "id",
+        "customer_id",
+        "order_id",
+        "product_id"
+    ]
+
+    for index, row in failed_df.head(max_examples).iterrows():
+        row_identifier = f"row_index={index}"
+
+        for id_column in possible_id_columns:
+            if id_column in failed_df.columns:
+                row_identifier = f"{id_column}={safe_text(row[id_column])}"
+                break
+
+        sample_row = {
+            col: safe_text(row[col])
+            for col in failed_df.columns
+        }
+
+        details.append({
+            "dataset_name": dataset_name,
+            "check_type": check_type,
+            "column_name": column_name,
+            "row_identifier": row_identifier,
+            "bad_value": safe_text(row[column_name]) if column_name in failed_df.columns else None,
+            "reason": reason,
+            "sample_row": str(sample_row)
+        })
+
+    return details
 def build_result(
     dataset_name,
     check_type,
@@ -49,7 +106,8 @@ def build_result(
     rule=None,
     total_rows=0,
     failed_rows=0,
-    status="PASS"
+    status="PASS",
+    details=None
 ):
     failure_rate = 0
 
@@ -67,7 +125,8 @@ def build_result(
         "failed_rows": int(failed_rows),
         "failure_rate": failure_rate,
         "status": status,
-        "severity": severity
+        "severity": severity,
+        "details": details or []
     }
 
 def check_required_columns(df, dataset_name, required_columns):
@@ -112,8 +171,17 @@ def check_not_null_columns(df, dataset_name, columns):
             )
             continue
 
-        failed_rows = df[column].isnull().sum()
+        failed_df = df[df[column].isnull()]
+        failed_rows = len(failed_df)
         status = "PASS" if failed_rows == 0 else "FAIL"
+
+        details = make_issue_details(
+            failed_df,
+            dataset_name,
+            "not_null_check",
+            column,
+            f"{column} must not be null"
+        )
 
         results.append(
             build_result(
@@ -123,13 +191,12 @@ def check_not_null_columns(df, dataset_name, columns):
                 "not_null",
                 total_rows,
                 failed_rows,
-                status
+                status,
+                details
             )
         )
 
     return results
-
-
 def check_unique_columns(df, dataset_name, columns):
     results = []
     total_rows = len(df)
@@ -210,12 +277,20 @@ def check_format_rules(df, dataset_name, format_checks):
 
         non_null_df = df[df[column].notnull()]
 
-        invalid_rows = non_null_df[
-            ~non_null_df[column].astype(str).str.contains(pattern, regex=True)
+        failed_df = non_null_df[
+            ~non_null_df[column].astype(str).str.contains(pattern, regex=True, na=False)
         ]
 
-        failed_rows = len(invalid_rows)
+        failed_rows = len(failed_df)
         status = "PASS" if failed_rows == 0 else "FAIL"
+
+        details = make_issue_details(
+            failed_df,
+            dataset_name,
+            "format_check",
+            column,
+            f"{column} must match format: {format_type}"
+        )
 
         results.append(
             build_result(
@@ -225,12 +300,12 @@ def check_format_rules(df, dataset_name, format_checks):
                 format_type,
                 total_rows,
                 failed_rows,
-                status
+                status,
+                details
             )
         )
 
     return results
-
 
 def check_range_rules(df, dataset_name, range_checks):
     results = []
@@ -587,12 +662,20 @@ def check_referential_integrity(df, dataset_name, referential_rules, table_loade
 
         valid_values = set(foreign_df[foreign_column].dropna())
 
-        invalid_rows = df[
+        failed_df = df[
             df[column].notnull() & ~df[column].isin(valid_values)
         ]
 
-        failed_rows = len(invalid_rows)
+        failed_rows = len(failed_df)
         status = "PASS" if failed_rows == 0 else "FAIL"
+
+        details = make_issue_details(
+            failed_df,
+            dataset_name,
+            "referential_integrity_check",
+            column,
+            f"{column} must exist in {foreign_table}.{foreign_column}"
+        )
 
         results.append(
             build_result(
@@ -602,7 +685,8 @@ def check_referential_integrity(df, dataset_name, referential_rules, table_loade
                 f"{column}_must_exist_in_{foreign_table}.{foreign_column}",
                 total_rows,
                 failed_rows,
-                status
+                status,
+                details
             )
         )
 
