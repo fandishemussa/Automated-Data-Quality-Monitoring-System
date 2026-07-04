@@ -50,13 +50,23 @@ def load_issue_details():
     """
 
     return pd.read_sql(query, engine)
+def load_alerts():
+    engine = create_postgres_engine()
 
+    query = """
+        SELECT *
+        FROM data_quality_alerts
+        ORDER BY id DESC;
+    """
+
+    return pd.read_sql(query, engine)
 
 st.title("Automated Data Quality Monitoring Dashboard")
 
 runs_df = load_quality_runs()
 results_df = load_quality_results()
 details_df = load_issue_details()
+alerts_df = load_alerts()
 
 if runs_df.empty:
     st.warning("No data quality runs found. Run `python main.py` first.")
@@ -65,11 +75,13 @@ else:
     latest_run_id = int(latest_run["run_id"])
 
     latest_results_df = results_df[results_df["run_id"] == latest_run_id]
+    latest_alerts_df = alerts_df[alerts_df["run_id"] == latest_run_id]
+    unresolved_alerts_count = len(latest_alerts_df[latest_alerts_df["is_resolved"] == False])
 
     st.subheader("Latest Run Summary")
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
-
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+    col7.metric("Alerts", unresolved_alerts_count)
     col1.metric("Run ID", latest_run_id)
     col2.metric("Quality Score", f"{latest_run['quality_score']}%")
     col3.metric("Total Checks", int(latest_run["total_checks"]))
@@ -79,7 +91,21 @@ else:
 
     st.write("**Latest run time:**", latest_run["run_time"])
     st.write("**Overall status:**", latest_run["overall_status"])
+    st.divider()
 
+    st.subheader("Latest Run Alerts")
+
+    if latest_alerts_df.empty:
+        st.success("No alerts for the latest run.")
+    else:
+        unresolved_latest_alerts = latest_alerts_df[
+            latest_alerts_df["is_resolved"] == False
+            ]
+
+        if unresolved_latest_alerts.empty:
+            st.success("All alerts for the latest run are resolved.")
+        else:
+            st.dataframe(unresolved_latest_alerts, width="stretch")
     st.divider()
 
     st.subheader("Quality Score Trend")
@@ -101,7 +127,7 @@ else:
 
     filtered_results = results_df[results_df["run_id"] == selected_run_id]
     filtered_details = details_df[details_df["run_id"] == selected_run_id]
-
+    filtered_alerts = alerts_df[alerts_df["run_id"] == selected_run_id]
     datasets = ["All"] + sorted(
         filtered_results["dataset_name"].dropna().unique().tolist()
     )
@@ -146,6 +172,13 @@ else:
         st.success("No critical issues for this selection.")
     else:
         st.dataframe(critical_df, width="stretch")
+
+    st.subheader("Alerts for Selected Run")
+
+    if filtered_alerts.empty:
+        st.success("No alerts for this run.")
+    else:
+        st.dataframe(filtered_alerts, width="stretch")
 
     st.divider()
 

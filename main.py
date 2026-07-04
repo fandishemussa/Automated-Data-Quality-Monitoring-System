@@ -3,7 +3,7 @@ from data_sources.postgres_connector import load_table, get_table_names
 from checks.rule_engine import run_rules_for_dataset
 from reports.generate_report import save_results_to_postgres
 from reports.quality_score import calculate_quality_score
-
+from alerts.alert_manager import create_alerts_for_run
 
 def main():
     rules = load_rules("config/rules.yaml")
@@ -55,7 +55,12 @@ def main():
     else:
         print("Overall Status: PASS")
 
-    save_results_to_postgres(all_results)
+    save_result = save_results_to_postgres(all_results)
+
+    run_id = save_result["run_id"]
+    summary = save_result["summary"]
+
+    create_alerts_for_run(run_id, summary)
 
 
 if __name__ == "__main__":
