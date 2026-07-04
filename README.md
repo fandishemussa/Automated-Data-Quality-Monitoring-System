@@ -24,7 +24,7 @@ This project demonstrates practical skills in:
 - Dashboard development
 - Data documentation
 
----
+
 
 ## Key Features
 
@@ -43,7 +43,7 @@ The system supports multiple data quality checks, including:
 - Custom email domain validation
 - Severity classification
 
----
+
 
 ### Config-Driven Rules
 
@@ -87,7 +87,7 @@ orders:
         - cancelled
 ```
 
----
+
 
 ### Run History
 
@@ -104,7 +104,7 @@ The system stores:
 - Quality score
 - Overall status
 
----
+
 
 ### Issue Details
 
@@ -119,7 +119,7 @@ Example issue details:
 
 This makes debugging and root cause analysis easier.
 
----
+
 
 ### Alert System
 
@@ -131,7 +131,7 @@ The system creates alerts when:
 
 Alerts are saved into PostgreSQL and displayed in the dashboard.
 
----
+
 
 ### Streamlit Dashboard
 
@@ -149,7 +149,7 @@ Dashboard sections include:
 - Issues by severity
 - Run history
 
----
+
 
 ## Tech Stack
 
@@ -164,7 +164,7 @@ Dashboard sections include:
 | Validation Logic | Custom Python Rule Engine |
 | Environment | Windows / PowerShell |
 
----
+
 
 ## System Architecture
 
@@ -190,7 +190,6 @@ Alerts + Run History
 Streamlit Dashboard
 ```
 
----
 
 ## Project Structure
 
@@ -235,7 +234,7 @@ Automated_Data_Quality_Monotoring_System/
 └── README.md
 ```
 
----
+
 
 ## Database Tables Used by the System
 
@@ -262,7 +261,7 @@ data_quality_issue_details
 data_quality_alerts
 ```
 
----
+
 
 ## Setup Instructions
 
@@ -273,7 +272,7 @@ git clone https://github.com/your-username/Automated-Data-Quality-Monitoring-Sys
 cd Automated-Data-Quality-Monitoring-System
 ```
 
----
+
 
 ### 2. Create Virtual Environment
 
@@ -287,7 +286,7 @@ Activate it:
 .venv\Scripts\activate
 ```
 
----
+
 
 ### 3. Install Dependencies
 
@@ -301,7 +300,7 @@ If `requirements.txt` is not complete yet, install the main packages manually:
 pip install pandas sqlalchemy psycopg2-binary python-dotenv pyyaml streamlit
 ```
 
----
+
 
 ## Environment Variables
 
@@ -338,7 +337,7 @@ __pycache__/
 *.pyc
 ```
 
----
+
 
 ## PostgreSQL Setup
 
@@ -350,7 +349,7 @@ Open PowerShell and run:
 psql -U postgres -c "CREATE DATABASE data_quality_db;"
 ```
 
----
+
 
 ## Create Sample Source Tables
 
@@ -366,7 +365,7 @@ Insert sample data:
 psql -U postgres -d data_quality_db -c "INSERT INTO customers (name, email, phone, country) VALUES ('Ali', 'ali@example.com', '12345', 'Turkey'), ('Sara', NULL, '55555', 'Germany'), ('John', 'wrong-email', '99999', 'USA');"
 ```
 
----
+
 
 ### Orders Table
 
@@ -380,7 +379,7 @@ Insert sample data:
 psql -U postgres -d data_quality_db -c "INSERT INTO orders (customer_id, order_date, amount, status) VALUES (1, CURRENT_TIMESTAMP, 250.00, 'delivered'), (2, CURRENT_TIMESTAMP, 0.00, 'cancelled'), (999, CURRENT_TIMESTAMP, 100.00, 'shipped'), (3, CURRENT_TIMESTAMP + INTERVAL '1 day', 75.00, 'pending'), (1, CURRENT_TIMESTAMP, -20.00, 'unknown_status');"
 ```
 
----
+
 
 ### Products Table
 
@@ -394,7 +393,7 @@ Insert sample data:
 psql -U postgres -d data_quality_db -c "INSERT INTO products (product_name, price, stock, updated_at) VALUES ('Laptop Pro', 1200.00, 15, CURRENT_TIMESTAMP), ('Mouse-USB', 25.00, 5, CURRENT_TIMESTAMP), ('A', 10.00, 20, CURRENT_TIMESTAMP), ('Broken Product', -50.00, 10, CURRENT_TIMESTAMP), ('Old Keyboard', 45.00, -2, CURRENT_TIMESTAMP - INTERVAL '10 days');"
 ```
 
----
+
 
 ## Create Monitoring Tables
 
@@ -404,7 +403,7 @@ psql -U postgres -d data_quality_db -c "INSERT INTO products (product_name, pric
 psql -U postgres -d data_quality_db -c "CREATE TABLE IF NOT EXISTS data_quality_runs (run_id SERIAL PRIMARY KEY, run_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP, total_checks INT, passed_checks INT, failed_checks INT, critical_checks INT, quality_score FLOAT, overall_status VARCHAR(20));"
 ```
 
----
+
 
 ### Data Quality Results
 
@@ -412,7 +411,7 @@ psql -U postgres -d data_quality_db -c "CREATE TABLE IF NOT EXISTS data_quality_
 psql -U postgres -d data_quality_db -c "CREATE TABLE IF NOT EXISTS data_quality_results (id SERIAL PRIMARY KEY, run_id INT, dataset_name VARCHAR(100), check_type VARCHAR(100), column_name VARCHAR(100), rule TEXT, total_rows INT, failed_rows INT, failure_rate FLOAT, status VARCHAR(20), severity VARCHAR(20), run_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
 ```
 
----
+
 
 ### Issue Details
 
@@ -420,7 +419,7 @@ psql -U postgres -d data_quality_db -c "CREATE TABLE IF NOT EXISTS data_quality_
 psql -U postgres -d data_quality_db -c "CREATE TABLE IF NOT EXISTS data_quality_issue_details (id SERIAL PRIMARY KEY, run_id INT, result_id INT, dataset_name VARCHAR(100), check_type VARCHAR(100), column_name VARCHAR(100), row_identifier VARCHAR(255), bad_value TEXT, reason TEXT, sample_row TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
 ```
 
----
+
 
 ### Alerts
 
@@ -428,7 +427,7 @@ psql -U postgres -d data_quality_db -c "CREATE TABLE IF NOT EXISTS data_quality_
 psql -U postgres -d data_quality_db -c "CREATE TABLE IF NOT EXISTS data_quality_alerts (id SERIAL PRIMARY KEY, run_id INT, alert_type VARCHAR(100), severity VARCHAR(20), message TEXT, is_resolved BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);"
 ```
 
----
+
 
 ## How to Run the Data Quality Checks
 
@@ -454,7 +453,7 @@ Data quality run saved successfully.
 Alerts created.
 ```
 
----
+
 
 ## How to Run the Dashboard
 
@@ -470,7 +469,7 @@ The dashboard will open in your browser:
 http://localhost:8501
 ```
 
----
+
 
 ## Example Dashboard Sections
 
@@ -516,7 +515,7 @@ Shows generated alerts for failed or critical checks.
 
 Shows all previous data quality runs.
 
----
+
 
 ## Example Data Quality Results
 
@@ -528,7 +527,7 @@ Shows all previous data quality runs.
 | orders | range_check | amount | 1 | FAIL | MEDIUM |
 | products | range_check | price | 1 | FAIL | MEDIUM |
 
----
+
 
 ## Quality Score Logic
 
@@ -547,7 +546,7 @@ Passed Checks = 21
 Quality Score = 70%
 ```
 
----
+
 
 ## Severity Logic
 
@@ -573,7 +572,7 @@ Examples:
 | range_check | MEDIUM |
 | freshness_check | MEDIUM |
 
----
+
 
 ## Data Quality Dimensions Covered
 
@@ -588,7 +587,6 @@ This project covers several important data quality dimensions.
 | Timeliness | Data should be updated recently |
 | Accuracy | Values should be within expected ranges |
 
----
 
 ## Example Rule Configuration
 
@@ -633,7 +631,7 @@ orders:
       foreign_column: customer_id
 ```
 
----
+
 
 ## Useful PostgreSQL Commands
 
@@ -679,7 +677,7 @@ View alerts:
 psql -U postgres -d data_quality_db -c "SELECT id, run_id, alert_type, severity, message, is_resolved FROM data_quality_alerts ORDER BY id DESC LIMIT 20;"
 ```
 
----
+
 
 ## Troubleshooting
 
@@ -695,13 +693,13 @@ C:\Program Files\PostgreSQL\18\bin
 
 Add it to Environment Variables → Path.
 
----
+
 
 ### `password authentication failed`
 
 Check your PostgreSQL username and password in `.env`.
 
----
+
 
 ### `database does not exist`
 
@@ -711,7 +709,7 @@ Create the database:
 psql -U postgres -c "CREATE DATABASE data_quality_db;"
 ```
 
----
+
 
 ### `ModuleNotFoundError`
 
@@ -727,7 +725,7 @@ Or manually:
 pip install pandas sqlalchemy psycopg2-binary python-dotenv pyyaml streamlit
 ```
 
----
+
 
 ### Streamlit warning: `missing ScriptRunContext`
 
@@ -745,22 +743,23 @@ Correct:
 python -m streamlit run dashboard/app.py
 ```
 
----
+
 
 ## Requirements
 
 Recommended `requirements.txt`:
 
 ```text
-pandas
 sqlalchemy
+pandas
+altair
 psycopg2-binary
 python-dotenv
-pyyaml
 streamlit
+pyyaml
 ```
 
----
+
 
 ## Future Improvements
 
@@ -779,7 +778,7 @@ Planned improvements:
 - Database initialization script
 - Sample data generation script
 
----
+
 
 ## Portfolio Value
 
@@ -793,32 +792,9 @@ This project is useful for roles such as:
 - Data Steward
 - Junior Data Platform Engineer
 
----
-
-## CV / Resume Bullet Points
-
-You can describe this project like this:
-
-```text
-Built an automated data quality monitoring system using Python, PostgreSQL, pandas, SQLAlchemy, YAML, and Streamlit. The system extracts data from PostgreSQL, applies configurable validation rules, detects missing values, duplicates, invalid formats, range violations, freshness issues, and referential integrity problems. It stores run history, failed-row issue details, quality scores, severity levels, and alerts in PostgreSQL, and visualizes results through an interactive Streamlit dashboard.
-```
-
-Short version:
-
-```text
-Developed a Python-based data quality monitoring platform with PostgreSQL integration, YAML-driven validation rules, automated alerting, failed-row issue tracking, quality scoring, and a Streamlit dashboard.
-```
-
----
 
 ## Author
 
 **Fandishe Mussa**
 
 Software Engineer and Data Science Enthusiast
-
----
-
-## License
-
-This project is for educational and portfolio purposes.
