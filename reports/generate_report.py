@@ -149,3 +149,7 @@ def save_results_to_postgres(results):
                 connection.execute(detail_insert_query, detail_params)
 
     print(f"Data quality run saved successfully. Run ID: {run_id}")
+    return {
+        "run_id": run_id,
+        "summary": summary
+    }
