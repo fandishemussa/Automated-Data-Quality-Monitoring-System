@@ -7,8 +7,7 @@ from reports.data_profiler import profile_and_save_datasets
 from reports.generate_report import save_results_to_postgres
 from reports.quality_score import calculate_quality_score
 from utils.logger import get_logger
-
-
+from notifications.mailtrap_notifier import send_mailtrap_alert_email
 logger = get_logger(__name__)
 
 
@@ -100,7 +99,13 @@ def main():
     except Exception:
         logger.exception("Data profiling failed for run %s.", run_id)
 
-    create_alerts_for_run(run_id, summary)
+    created_alerts = create_alerts_for_run(run_id, summary)
+
+    send_mailtrap_alert_email(
+        run_id=run_id,
+        summary=summary,
+        alerts=created_alerts
+    )
     logger.info("Data quality monitoring run completed. Run ID: %s", run_id)
 
 
