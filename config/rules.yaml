@@ -1,0 +1,185 @@
+# Data Quality Rules Configuration
+# Project: Data Quality Framework
+# Last Updated: 2026-07-04
+# Description: Comprehensive validation rules for all data sources
+
+customers:
+  required_columns:
+    - customer_id
+    - name
+    - email
+    - created_at
+
+  unique_columns:
+    - customer_id
+    - email
+
+  format_checks:
+    email: email
+    name: alpha_with_spaces
+
+  range_checks:
+    name:
+      min_length: 2
+      max_length: 100
+
+  custom_rules:
+    email_domains:
+      allowed_domains:
+        - gmail.com
+        - yahoo.com
+        - outlook.com
+        - company.com
+
+  not_null_columns:
+    - customer_id
+    - name
+    - email
+    - created_at
+
+  freshness:
+    created_at:
+      max_delay_days: 7
+
+orders:
+  required_columns:
+    - order_id
+    - customer_id
+    - order_date
+    - amount
+    - status
+
+  unique_columns:
+    - order_id
+
+  not_null_columns:
+    - order_id
+    - customer_id
+    - order_date
+    - amount
+    - status
+
+  range_checks:
+    amount:
+      min: 0
+      max: 1000000
+    order_date:
+      max_date: today
+
+  categorical_checks:
+    status:
+      allowed_values:
+        - pending
+        - processing
+        - shipped
+        - delivered
+        - cancelled
+        - refunded
+
+  referential_integrity:
+    customer_id:
+      foreign_table: customers
+      foreign_column: customer_id
+
+  freshness:
+    order_date:
+      max_delay_days: 1
+
+  custom_rules:
+    business_logic:
+      - rule: cancelled_orders_zero_amount
+        description: "Cancelled orders should have amount refunded"
+      - rule: future_dates_not_allowed
+        description: "Order date cannot be in the future"
+
+products:
+  required_columns:
+    - product_id
+    - product_name
+    - price
+    - stock
+
+  unique_columns:
+    - product_id
+
+  not_null_columns:
+    - product_id
+    - product_name
+    - price
+    - stock
+
+  range_checks:
+    price:
+      min: 0
+      max: 100000
+    stock:
+      min: 0
+      max: 10000
+    product_name:
+      min_length: 3
+      max_length: 200
+
+  format_checks:
+    product_name: alphanumeric_with_spaces_and_hyphens
+
+  freshness:
+    updated_at:
+      max_delay_days: 3
+
+  custom_rules:
+    stock_alerts:
+      low_stock_threshold: 10
+      out_of_stock_threshold: 0
+    pricing_rules:
+      - rule: price_must_be_positive
+        description: "Product price must be greater than 0"
+      - rule: discount_validation
+        description: "Discounted price cannot be greater than original price"
+
+# Global rules applied to all tables
+global_rules:
+  row_count:
+    min_rows: 1
+
+  completeness_threshold: 0.95
+
+  duplicate_tolerance: 0.01
+
+  data_drift_detection:
+    enabled: true
+    statistical_tests:
+      - chi_square
+      - kolmogorov_smirnov
+
+  anomaly_detection:
+    enabled: true
+    methods:
+      - isolation_forest
+      - z_score
+
+# Cross-table validation rules
+cross_table_validations:
+  - name: customer_order_relationship
+    description: "Every order must have a valid customer"
+    validation:
+      source_table: orders
+      source_column: customer_id
+      target_table: customers
+      target_column: customer_id
+      type: foreign_key
+
+  - name: orphaned_orders
+    description: "Check for orders without corresponding customers"
+    validation:
+      type: orphan_check
+      child_table: orders
+      parent_table: customers
+      join_column: customer_id
+
+# Quality score thresholds
+quality_thresholds:
+  critical: 95
+  warning: 85
+  acceptable: 75
+      
+        
