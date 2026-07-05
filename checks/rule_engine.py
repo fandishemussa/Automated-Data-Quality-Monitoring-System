@@ -6,6 +6,8 @@ returns a standardized result dictionary that can be saved by the reporting
 module.
 """
 
+from __future__ import annotations
+
 from typing import Any, Callable
 
 import pandas as pd
@@ -32,7 +34,7 @@ ID_COLUMNS_BY_DATASET = {
 DEFAULT_ID_COLUMNS = ["id", "customer_id", "order_id", "product_id"]
 
 
-def calculate_severity(check_type, status, failure_rate):
+def calculate_severity(check_type: str, status: str, failure_rate: float) -> str:
     """Calculate a severity label for a standardized check result."""
 
     if status == "PASS":
@@ -80,7 +82,7 @@ def calculate_severity(check_type, status, failure_rate):
     return "MEDIUM"
 
 
-def safe_text(value):
+def safe_text(value: Any) -> str:
     """Convert a value to safe text for issue details."""
 
     if value is None:
@@ -95,13 +97,13 @@ def safe_text(value):
     return str(value)
 
 
-def _total_rows(df):
+def _total_rows(df: Any) -> int:
     """Return a safe row count for a DataFrame-like object."""
 
     return len(df) if isinstance(df, pd.DataFrame) else 0
 
 
-def _failure_rate(total_rows, failed_rows):
+def _failure_rate(total_rows: int, failed_rows: int) -> float:
     """Calculate failure rate while keeping missing-table failures visible."""
 
     if total_rows > 0:
@@ -110,19 +112,24 @@ def _failure_rate(total_rows, failed_rows):
     return 1.0 if failed_rows > 0 else 0
 
 
-def _status_from_failed_rows(failed_rows):
+def _status_from_failed_rows(failed_rows: int) -> str:
     """Return PASS when no rows failed; otherwise FAIL."""
 
     return "PASS" if failed_rows == 0 else "FAIL"
 
 
-def _possible_id_columns(dataset_name):
+def _possible_id_columns(dataset_name: str) -> list[str]:
     """Return likely row identifier columns for a dataset."""
 
     return ID_COLUMNS_BY_DATASET.get(dataset_name, DEFAULT_ID_COLUMNS)
 
 
-def _row_identifier(row, row_index, dataset_name, columns):
+def _row_identifier(
+    row: pd.Series,
+    row_index: Any,
+    dataset_name: str,
+    columns: list[str],
+) -> str:
     """Build a human-readable row identifier for issue details."""
 
     for id_column in _possible_id_columns(dataset_name):
@@ -132,7 +139,7 @@ def _row_identifier(row, row_index, dataset_name, columns):
     return f"row_index={row_index}"
 
 
-def _sample_row(row, columns):
+def _sample_row(row: pd.Series, columns: list[str]) -> dict[str, str]:
     """Serialize a row sample for storage in the issue details table."""
 
     return {
@@ -142,13 +149,13 @@ def _sample_row(row, columns):
 
 
 def make_issue_details(
-    failed_df,
-    dataset_name,
-    check_type,
-    column_name,
-    reason,
-    max_examples=DEFAULT_MAX_DETAIL_EXAMPLES,
-):
+    failed_df: pd.DataFrame | None,
+    dataset_name: str,
+    check_type: str,
+    column_name: str | None,
+    reason: str,
+    max_examples: int = DEFAULT_MAX_DETAIL_EXAMPLES,
+) -> list[dict[str, Any]]:
     """Create example issue-detail records from failed rows when available."""
 
     details = []
@@ -176,7 +183,12 @@ def make_issue_details(
     return details
 
 
-def make_message_detail(dataset_name, check_type, column_name, reason):
+def make_message_detail(
+    dataset_name: str,
+    check_type: str,
+    column_name: str | None,
+    reason: str,
+) -> list[dict[str, Any]]:
     """Create a detail record for failures that do not have row examples."""
 
     return [{
@@ -191,15 +203,15 @@ def make_message_detail(dataset_name, check_type, column_name, reason):
 
 
 def build_result(
-    dataset_name,
-    check_type,
-    column_name=None,
-    rule=None,
-    total_rows=0,
-    failed_rows=0,
-    status=None,
-    details=None,
-):
+    dataset_name: str,
+    check_type: str,
+    column_name: str | None = None,
+    rule: Any = None,
+    total_rows: int = 0,
+    failed_rows: int = 0,
+    status: str | None = None,
+    details: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Build the standardized result dictionary used throughout the project."""
 
     if status is None:
@@ -223,14 +235,14 @@ def build_result(
 
 
 def _build_failure_result(
-    dataset_name,
-    check_type,
-    column_name,
-    rule,
-    total_rows,
-    reason,
-    failed_rows=None,
-):
+    dataset_name: str,
+    check_type: str,
+    column_name: str | None,
+    rule: Any,
+    total_rows: int,
+    reason: str,
+    failed_rows: int | None = None,
+) -> dict[str, Any]:
     """Build a FAIL result for missing columns, bad configs, or exceptions."""
 
     if failed_rows is None:
@@ -248,7 +260,13 @@ def _build_failure_result(
     )
 
 
-def _column_missing_result(df, dataset_name, check_type, column_name, rule):
+def _column_missing_result(
+    df: pd.DataFrame,
+    dataset_name: str,
+    check_type: str,
+    column_name: str,
+    rule: Any,
+) -> dict[str, Any]:
     """Build a consistent failure result for missing columns."""
 
     reason = f"Required column '{column_name}' is missing from {dataset_name}."
@@ -262,27 +280,31 @@ def _column_missing_result(df, dataset_name, check_type, column_name, rule):
     )
 
 
-def _ensure_rule_mapping(rules, rule_group_name):
+def _ensure_rule_mapping(rules: Any, rule_group_name: str) -> None:
     """Validate that a rule group is a mapping."""
 
     if not isinstance(rules, dict):
         raise ValueError(f"{rule_group_name} must be a mapping of column names to rules.")
 
 
-def _ensure_rule_list(rules, rule_group_name):
+def _ensure_rule_list(rules: Any, rule_group_name: str) -> None:
     """Validate that a rule group is a list."""
 
     if not isinstance(rules, list):
         raise ValueError(f"{rule_group_name} must be a list of column names.")
 
 
-def _non_null_values(df, column):
+def _non_null_values(df: pd.DataFrame, column: str) -> pd.DataFrame:
     """Return rows where the selected column is not null."""
 
     return df[df[column].notnull()]
 
 
-def check_required_columns(df, dataset_name, required_columns):
+def check_required_columns(
+    df: pd.DataFrame,
+    dataset_name: str,
+    required_columns: list[str],
+) -> list[dict[str, Any]]:
     """Check that every required column exists in the DataFrame."""
 
     _ensure_rule_list(required_columns, "required_columns")
@@ -318,7 +340,11 @@ def check_required_columns(df, dataset_name, required_columns):
     return results
 
 
-def check_not_null_columns(df, dataset_name, columns):
+def check_not_null_columns(
+    df: pd.DataFrame,
+    dataset_name: str,
+    columns: list[str],
+) -> list[dict[str, Any]]:
     """Check that configured columns do not contain null values."""
 
     _ensure_rule_list(columns, "not_null_columns")
@@ -364,7 +390,11 @@ def check_not_null_columns(df, dataset_name, columns):
     return results
 
 
-def check_unique_columns(df, dataset_name, columns):
+def check_unique_columns(
+    df: pd.DataFrame,
+    dataset_name: str,
+    columns: list[str],
+) -> list[dict[str, Any]]:
     """Check that configured columns contain unique values."""
 
     _ensure_rule_list(columns, "unique_columns")
@@ -412,7 +442,11 @@ def check_unique_columns(df, dataset_name, columns):
     return results
 
 
-def check_format_rules(df, dataset_name, format_checks):
+def check_format_rules(
+    df: pd.DataFrame,
+    dataset_name: str,
+    format_checks: dict[str, str],
+) -> list[dict[str, Any]]:
     """Check configured columns against named regular expression formats."""
 
     _ensure_rule_mapping(format_checks, "format_checks")
@@ -477,7 +511,11 @@ def check_format_rules(df, dataset_name, format_checks):
     return results
 
 
-def _build_range_failure_mask(df, column, rules):
+def _build_range_failure_mask(
+    df: pd.DataFrame,
+    column: str,
+    rules: dict[str, Any],
+) -> tuple[pd.Series, list[str]]:
     """Return failed rows and reason text for a range rule."""
 
     failed_mask = pd.Series(False, index=df.index)
@@ -525,7 +563,11 @@ def _build_range_failure_mask(df, column, rules):
     return failed_mask, reasons
 
 
-def check_range_rules(df, dataset_name, range_checks):
+def check_range_rules(
+    df: pd.DataFrame,
+    dataset_name: str,
+    range_checks: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Check numeric, length, and date range rules."""
 
     _ensure_rule_mapping(range_checks, "range_checks")
@@ -587,7 +629,11 @@ def check_range_rules(df, dataset_name, range_checks):
     return results
 
 
-def check_categorical_rules(df, dataset_name, categorical_checks):
+def check_categorical_rules(
+    df: pd.DataFrame,
+    dataset_name: str,
+    categorical_checks: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Check that values are part of configured allowed categories."""
 
     _ensure_rule_mapping(categorical_checks, "categorical_checks")
@@ -648,7 +694,11 @@ def check_categorical_rules(df, dataset_name, categorical_checks):
     return results
 
 
-def check_freshness_rules(df, dataset_name, freshness_rules):
+def check_freshness_rules(
+    df: pd.DataFrame,
+    dataset_name: str,
+    freshness_rules: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Check that a date/timestamp column is recent enough."""
 
     _ensure_rule_mapping(freshness_rules, "freshness")
@@ -762,7 +812,12 @@ def check_freshness_rules(df, dataset_name, freshness_rules):
     return results
 
 
-def check_referential_integrity(df, dataset_name, referential_rules, table_loader):
+def check_referential_integrity(
+    df: pd.DataFrame,
+    dataset_name: str,
+    referential_rules: dict[str, dict[str, Any]],
+    table_loader: Callable[[str], pd.DataFrame] | None,
+) -> list[dict[str, Any]]:
     """Check that local key values exist in a referenced table/column."""
 
     _ensure_rule_mapping(referential_rules, "referential_integrity")
@@ -887,7 +942,7 @@ def check_referential_integrity(df, dataset_name, referential_rules, table_loade
     return results
 
 
-def _email_domain_rule_config(email_domain_rules):
+def _email_domain_rule_config(email_domain_rules: dict[str, Any]) -> tuple[str, list[str]]:
     """Normalize custom_rules.email_domains into a column and domains list."""
 
     if not isinstance(email_domain_rules, dict):
@@ -902,7 +957,11 @@ def _email_domain_rule_config(email_domain_rules):
     return column, allowed_domains
 
 
-def check_custom_rules(df, dataset_name, custom_rules):
+def check_custom_rules(
+    df: pd.DataFrame,
+    dataset_name: str,
+    custom_rules: dict[str, Any],
+) -> list[dict[str, Any]]:
     """Run supported custom rules, currently email domain validation."""
 
     if not isinstance(custom_rules, dict):
@@ -988,12 +1047,12 @@ def check_custom_rules(df, dataset_name, custom_rules):
 
 def _execute_rule_group(
     handler: Callable[..., list[dict[str, Any]]],
-    dataset_name,
-    check_type,
-    rule_name,
-    total_rows,
+    dataset_name: str,
+    check_type: str,
+    rule_name: str,
+    total_rows: int,
     *args,
-):
+) -> list[dict[str, Any]]:
     """Run one rule group and return a FAIL result if it raises."""
 
     try:
@@ -1016,7 +1075,12 @@ def _execute_rule_group(
         ]
 
 
-def run_rules_for_dataset(df, dataset_name, dataset_rules, table_loader=None):
+def run_rules_for_dataset(
+    df: pd.DataFrame,
+    dataset_name: str,
+    dataset_rules: dict[str, Any],
+    table_loader: Callable[[str], pd.DataFrame] | None = None,
+) -> list[dict[str, Any]]:
     """Run all configured rules for one dataset and return result dictionaries.
 
     A single broken rule group is converted into a FAIL result so the rest of

@@ -1,0 +1,20 @@
+# Dataset-level service-level agreements for data quality.
+# These thresholds are evaluated after each monitoring run.
+
+customers:
+  minimum_quality_score: 95
+  max_critical_issues: 0
+  max_failed_checks: 2
+  freshness_hours: 24
+
+orders:
+  minimum_quality_score: 90
+  max_critical_issues: 0
+  max_failed_checks: 3
+  freshness_hours: 12
+
+products:
+  minimum_quality_score: 90
+  max_critical_issues: 0
+  max_failed_checks: 3
+  freshness_hours: 48

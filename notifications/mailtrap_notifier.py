@@ -1,3 +1,7 @@
+"""Mailtrap Email API notification helpers for data quality alerts."""
+
+from __future__ import annotations
+
 import os
 from pathlib import Path
 from typing import Any
@@ -22,14 +26,12 @@ def send_mailtrap_email(
     plain_body: str,
     html_body: str | None = None,
 ) -> bool:
-    """
-    Send an email using Mailtrap Email API.
-    """
+    """Send an email using Mailtrap Email API settings from the environment."""
 
     enabled = get_bool_env("EMAIL_NOTIFICATIONS_ENABLED", False)
 
     if not enabled:
-        print("📧 Email notifications are disabled.")
+        print("Email notifications are disabled.")
         return False
 
     api_token = os.getenv("MAILTRAP_API_TOKEN")
@@ -38,11 +40,11 @@ def send_mailtrap_email(
     recipients = get_alert_recipients()
 
     if not api_token:
-        print("⚠️ MAILTRAP_API_TOKEN is missing in .env.")
+        print("MAILTRAP_API_TOKEN is missing in .env.")
         return False
 
     if not recipients:
-        print("⚠️ No recipients configured. Check ALERT_RECIPIENTS in .env.")
+        print("No recipients configured. Check ALERT_RECIPIENTS in .env.")
         return False
 
     try:
@@ -64,13 +66,13 @@ def send_mailtrap_email(
         client = mt.MailtrapClient(token=api_token)
         response = client.send(mail)
 
-        print(f"📧 Mailtrap email notification sent to: {', '.join(recipients)}")
+        print(f"Mailtrap email notification sent to: {', '.join(recipients)}")
         print(f"Mailtrap response: {response}")
 
         return True
 
     except Exception as error:
-        print(f"❌ Failed to send Mailtrap email notification: {error}")
+        print(f"Failed to send Mailtrap email notification: {error}")
         return False
 
 
@@ -79,12 +81,10 @@ def send_mailtrap_alert_email(
     summary: dict[str, Any],
     alerts: list[dict[str, Any]],
 ) -> bool:
-    """
-    Build and send a data quality alert email using Mailtrap.
-    """
+    """Build and send a data quality alert email using Mailtrap."""
 
     if not alerts:
-        print("✅ No alerts found. Mailtrap email skipped.")
+        print("No alerts found. Mailtrap email skipped.")
         return False
 
     quality_score = summary.get("quality_score", 0)

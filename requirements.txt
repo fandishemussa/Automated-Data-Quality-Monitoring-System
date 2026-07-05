@@ -1,8 +1,12 @@
-sqlalchemy
-pandas
 altair
+fastapi
+mailtrap
+openpyxl
+pandas
 psycopg2-binary
-python-dotenv
-streamlit
-pyyaml
 pytest
+python-dotenv
+pyyaml
+sqlalchemy
+streamlit
+uvicorn

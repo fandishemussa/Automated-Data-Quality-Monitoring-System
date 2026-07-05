@@ -1,8 +1,12 @@
-import yaml
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 
-def load_rules(file_path="config/rules.yaml"):
+def load_rules(file_path: str = "config/rules.yaml") -> dict[str, Any]:
+    """Load YAML data quality rules from disk."""
+
     path = Path(file_path)
 
     if not path.exists():
@@ -11,4 +15,4 @@ def load_rules(file_path="config/rules.yaml"):
     with open(path, "r", encoding="utf-8") as file:
         rules = yaml.safe_load(file)
 
-    return rules
+    return rules or {}

@@ -1,5 +1,6 @@
 """Column-level data profiling for monitored datasets."""
 
+import json
 from datetime import date, datetime
 from typing import Any
 
@@ -28,9 +29,17 @@ CREATE TABLE IF NOT EXISTS data_profile_results (
     min_value TEXT,
     max_value TEXT,
     mean FLOAT,
+    std_dev FLOAT,
+    value_distribution TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
+
+
+PROFILE_TABLE_MIGRATIONS = [
+    "ALTER TABLE data_profile_results ADD COLUMN IF NOT EXISTS std_dev FLOAT",
+    "ALTER TABLE data_profile_results ADD COLUMN IF NOT EXISTS value_distribution TEXT",
+]
 
 
 INSERT_PROFILE_RESULT_SQL = """
@@ -46,7 +55,9 @@ INSERT INTO data_profile_results (
     duplicate_count,
     min_value,
     max_value,
-    mean
+    mean,
+    std_dev,
+    value_distribution
 )
 VALUES (
     :run_id,
@@ -60,7 +71,9 @@ VALUES (
     :duplicate_count,
     :min_value,
     :max_value,
-    :mean
+    :mean,
+    :std_dev,
+    :value_distribution
 )
 """
 
@@ -101,12 +114,13 @@ def _profile_numeric_column(series):
     numeric_values = pd.to_numeric(series, errors="coerce")
 
     if numeric_values.dropna().empty:
-        return None, None, None
+        return None, None, None, None
 
     return (
         _safe_text(numeric_values.min()),
         _safe_text(numeric_values.max()),
         _safe_float(numeric_values.mean()),
+        _safe_float(numeric_values.std()),
     )
 
 
@@ -151,6 +165,31 @@ def _duplicate_count(series):
         return None
 
 
+def _value_distribution(series, max_categories=100):
+    """Return a JSON count distribution for categorical-style columns."""
+
+    try:
+        value_counts = (
+            series
+            .fillna("__NULL__")
+            .astype(str)
+            .value_counts(dropna=False)
+            .head(max_categories)
+            .to_dict()
+        )
+    except TypeError:
+        logger.debug(
+            "Skipping distribution for column with unhashable values: %s",
+            series.name,
+        )
+        return None
+
+    if not value_counts:
+        return None
+
+    return json.dumps(value_counts, sort_keys=True)
+
+
 def profile_dataframe(df, dataset_name):
     """Return column-level profiling records for a DataFrame.
 
@@ -173,14 +212,18 @@ def profile_dataframe(df, dataset_name):
         min_value = None
         max_value = None
         mean_value = None
+        std_dev = None
+        distribution = None
 
         if (
             pd.api.types.is_numeric_dtype(series)
             and not pd.api.types.is_bool_dtype(series)
         ):
-            min_value, max_value, mean_value = _profile_numeric_column(series)
+            min_value, max_value, mean_value, std_dev = _profile_numeric_column(series)
         elif _is_date_like_column(series):
             min_value, max_value = _profile_datetime_column(series)
+        else:
+            distribution = _value_distribution(series)
 
         profiles.append({
             "dataset_name": dataset_name,
@@ -194,6 +237,8 @@ def profile_dataframe(df, dataset_name):
             "min_value": min_value,
             "max_value": max_value,
             "mean": mean_value,
+            "std_dev": std_dev,
+            "value_distribution": distribution,
         })
 
     return profiles
@@ -206,6 +251,8 @@ def ensure_profile_table_exists(engine=None):
 
     with engine.begin() as connection:
         connection.execute(text(CREATE_PROFILE_TABLE_SQL))
+        for statement in PROFILE_TABLE_MIGRATIONS:
+            connection.execute(text(statement))
 
 
 def save_profile_results_to_postgres(run_id, profile_results):
@@ -232,6 +279,8 @@ def save_profile_results_to_postgres(run_id, profile_results):
             "min_value": result.get("min_value"),
             "max_value": result.get("max_value"),
             "mean": result.get("mean"),
+            "std_dev": result.get("std_dev"),
+            "value_distribution": result.get("value_distribution"),
         }
         for result in profile_results
     ]
@@ -271,6 +320,8 @@ def profile_and_save_datasets(run_id, datasets):
                 "min_value": str(exc),
                 "max_value": None,
                 "mean": None,
+                "std_dev": None,
+                "value_distribution": None,
                 "error": str(exc),
             })
 

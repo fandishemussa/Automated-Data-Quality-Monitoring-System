@@ -1,4 +1,7 @@
+from typing import Any
+
 from sqlalchemy import text
+
 from data_sources.postgres_connector import create_postgres_engine
 from utils.logger import get_logger
 
@@ -6,7 +9,12 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def create_alerts_for_run(run_id, summary):
+def create_alerts_for_run(
+    run_id: int,
+    summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Create alert records for a completed data quality run."""
+
     logger.info("Evaluating alerts for run %s.", run_id)
 
     alerts = []

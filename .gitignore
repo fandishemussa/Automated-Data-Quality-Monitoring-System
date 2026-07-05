@@ -5,5 +5,13 @@ __pycache__/
 .idea/
 .streamlit/secrets.toml
 logs/*.log
+airflow/logs/
+airflow/plugins/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.DS_Store
 .agents/*
 .agents
