@@ -458,13 +458,28 @@ Dashboard capabilities:
 
 ## Dashboard Screenshots
 
-docs/screenshots/overview.png
-docs/screenshots/overview1.png
-docs/screenshots/check-results.png
-docs/screenshots/alerts.png
-docs/screenshots/screen4.png
-docs/screenshots/screen5.png
-docs/screenshots/screen6.png
+## 📸 Screenshots
+
+### Overview
+![Overview](docs/screenshots/overview.png)
+
+### Overview 1
+![Overview 1](docs/screenshots/overview1.png)
+
+### Check Results
+![Check Results](docs/screenshots/check-results.png)
+
+### Alerts
+![Alerts](docs/screenshots/alerts.png)
+
+### Screen 4
+![Screen 4](docs/screenshots/screen4.png)
+
+### Screen 5
+![Screen 5](docs/screenshots/screen5.png)
+
+### Screen 6
+![Screen 6](docs/screenshots/screen6.png)
 
 ## Documentation
 
