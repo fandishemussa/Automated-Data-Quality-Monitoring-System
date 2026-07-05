@@ -9,7 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from data_sources.postgres_connector import create_postgres_engine
+from data_sources.postgres_connector import create_monitor_engine
 from utils.logger import get_logger
 
 
@@ -35,7 +35,7 @@ def fetch_all(query: str, params: dict[str, Any] | None = None) -> list[dict[str
     """Execute a SELECT query and return JSON-friendly dictionaries."""
 
     try:
-        engine = create_postgres_engine()
+        engine = create_monitor_engine()
         with engine.begin() as connection:
             rows = connection.execute(text(query), params or {}).mappings().all()
     except SQLAlchemyError:
@@ -165,13 +165,15 @@ def resolve_alert(alert_id: int) -> dict[str, Any]:
     query = text(
         """
         UPDATE data_quality_alerts
-        SET is_resolved = TRUE
+        SET
+            is_resolved = TRUE,
+            resolved_at = CURRENT_TIMESTAMP
         WHERE id = :alert_id
         """
     )
 
     try:
-        engine = create_postgres_engine()
+        engine = create_monitor_engine()
         with engine.begin() as connection:
             result = connection.execute(query, {"alert_id": alert_id})
     except SQLAlchemyError:

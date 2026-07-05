@@ -33,8 +33,8 @@ This project models a lightweight data governance workflow for operational data 
 ## Governance Workflow
 
 1. Define rules in `config/rules.yaml`.
-2. Initialize monitoring tables with `python database/init_db.py`.
-3. Run checks with `python main.py` or `python cli.py run-checks`.
+2. Initialize monitoring tables with `python cli.py init-db`.
+3. Run checks with `python cli.py run-checks`.
 4. Review results and issue details in Streamlit.
 5. Resolve alerts after investigation.
 6. Update rules or upstream pipelines when recurring issues are found.

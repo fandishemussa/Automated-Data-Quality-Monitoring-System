@@ -10,7 +10,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from checks.rule_engine import build_result, make_message_detail
-from data_sources.postgres_connector import create_postgres_engine
+from data_sources.postgres_connector import create_monitor_engine
 from utils.logger import get_logger
 
 
@@ -188,7 +188,7 @@ def _load_historical_profiles(
     )
 
     try:
-        engine = create_postgres_engine()
+        engine = create_monitor_engine()
         history_df = pd.read_sql(query, engine, params={"dataset_name": dataset_name})
     except Exception:
         logger.info("No historical profile baseline found for dataset %s.", dataset_name)

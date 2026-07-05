@@ -5,7 +5,11 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, URL
 
-from config.settings import DATABASE
+from config.settings import (
+    DatabaseSettings,
+    get_monitor_db_config,
+    get_source_db_config,
+)
 from utils.logger import get_logger
 
 
@@ -45,33 +49,51 @@ def _validate_data_type(data_type: str) -> str:
     return data_type
 
 
-def create_postgres_engine() -> Engine:
-    """Create a SQLAlchemy engine using validated environment settings."""
+def _create_engine_from_settings(settings: DatabaseSettings, label: str) -> Engine:
+    """Create a SQLAlchemy engine from lazy database settings."""
 
     logger.debug(
-        "Creating PostgreSQL engine for host=%s database=%s driver=%s.",
-        DATABASE.host,
-        DATABASE.database,
-        DATABASE.drivername,
+        "Creating %s PostgreSQL engine for host=%s database=%s driver=%s.",
+        label,
+        settings.host,
+        settings.database,
+        settings.drivername,
     )
 
     database_url = URL.create(
-        drivername=DATABASE.drivername,
-        username=DATABASE.username,
-        password=DATABASE.password,
-        host=DATABASE.host,
-        port=DATABASE.port,
-        database=DATABASE.database,
+        drivername=settings.drivername,
+        username=settings.username,
+        password=settings.password,
+        host=settings.host,
+        port=settings.port,
+        database=settings.database,
     )
 
-    engine = create_engine(database_url)
-    return engine
+    return create_engine(database_url)
+
+
+def create_source_engine() -> Engine:
+    """Create the SQLAlchemy engine used to read source data tables."""
+
+    return _create_engine_from_settings(get_source_db_config(), "source")
+
+
+def create_monitor_engine() -> Engine:
+    """Create the SQLAlchemy engine used for monitoring tables."""
+
+    return _create_engine_from_settings(get_monitor_db_config(), "monitoring")
+
+
+def create_postgres_engine() -> Engine:
+    """Backward-compatible alias for the source PostgreSQL engine."""
+
+    return create_source_engine()
 
 
 def load_table(table_name: str) -> pd.DataFrame:
     """Load all rows from a validated PostgreSQL table name."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     query = text(f"SELECT * FROM {table_identifier}")
     df = pd.read_sql(query, engine)
@@ -82,7 +104,7 @@ def load_table(table_name: str) -> pd.DataFrame:
 def get_table_names() -> list[str]:
     """Return public table names from the connected PostgreSQL database."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     query = text("""
             SELECT table_name
             FROM information_schema.tables
@@ -96,7 +118,7 @@ def get_table_names() -> list[str]:
 def get_table_columns(table_name: str) -> list[str]:
     """Return column names for a public PostgreSQL table."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     query = text("""
         SELECT column_name
         FROM information_schema.columns
@@ -111,7 +133,7 @@ def get_table_columns(table_name: str) -> list[str]:
 def get_table_dtypes(table_name: str) -> dict[str, str]:
     """Return PostgreSQL data types keyed by column name."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     query = text("""
         SELECT column_name, data_type
         FROM information_schema.columns
@@ -126,7 +148,7 @@ def get_table_dtypes(table_name: str) -> dict[str, str]:
 def get_table_stats(table_name: str) -> dict[str, int]:
     """Return simple row-count statistics for a table."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     query = text(f"SELECT COUNT(*) AS row_count FROM {table_identifier}")
     df = pd.read_sql(query, engine)
@@ -137,7 +159,7 @@ def get_table_stats(table_name: str) -> dict[str, int]:
 def get_table_null_count(table_name: str) -> dict[str, Any]:
     """Return null counts for every column in a table."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     columns = get_table_columns(table_name)
 
@@ -158,7 +180,7 @@ def get_table_null_count(table_name: str) -> dict[str, Any]:
 def get_table_distinct_count(table_name: str, column_name: str) -> int:
     """Return distinct value count for one table column."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     column_identifier = _quote_identifier(column_name, "column name")
     query = text(
@@ -178,7 +200,7 @@ def get_table_distinct_count(table_name: str, column_name: str) -> int:
 def get_table_distinct_values(table_name: str, column_name: str) -> list[Any]:
     """Return distinct values for one table column."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     column_identifier = _quote_identifier(column_name, "column name")
     query = text(f"SELECT DISTINCT {column_identifier} FROM {table_identifier}")
@@ -195,7 +217,7 @@ def get_table_distinct_values(table_name: str, column_name: str) -> list[Any]:
 def get_table_sample(table_name: str, n: int = 10) -> pd.DataFrame:
     """Return a small sample of rows from a table."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     query = text(f"SELECT * FROM {table_identifier} LIMIT :limit")
     df = pd.read_sql(query, engine, params={"limit": int(n)})
@@ -206,7 +228,7 @@ def get_table_sample(table_name: str, n: int = 10) -> pd.DataFrame:
 def get_table_description(table_name: str) -> pd.DataFrame:
     """Return column metadata for a public table."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     query = text("""
         SELECT column_name, data_type, is_nullable
         FROM information_schema.columns
@@ -221,7 +243,7 @@ def get_table_description(table_name: str) -> pd.DataFrame:
 def get_table_size(table_name: str) -> str:
     """Return PostgreSQL's human-readable total relation size."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     query = text("""
         SELECT pg_size_pretty(pg_total_relation_size(to_regclass(:table_name)))
         AS table_size
@@ -234,7 +256,7 @@ def get_table_size(table_name: str) -> str:
 def get_table_indexes(table_name: str) -> pd.DataFrame:
     """Return PostgreSQL index definitions for a table."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     query = text("""
         SELECT indexname, indexdef
         FROM pg_indexes
@@ -249,7 +271,7 @@ def get_table_indexes(table_name: str) -> pd.DataFrame:
 def get_table_foreign_keys(table_name: str) -> pd.DataFrame:
     """Return foreign-key metadata for a table."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     query = text("""
         SELECT
             conname,
@@ -268,7 +290,7 @@ def get_table_foreign_keys(table_name: str) -> pd.DataFrame:
 def get_table_primary_keys(table_name: str) -> pd.DataFrame:
     """Return primary-key column names for a table."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     query = text("""
         SELECT a.attname
         FROM pg_index i
@@ -290,7 +312,7 @@ def update_table(
 ) -> int:
     """Update table rows using validated identifiers and bound values."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
 
     if not update_values:
         raise ValueError("update_values cannot be empty.")
@@ -331,7 +353,7 @@ def update_table(
 def delete_table_rows(table_name: str, where_conditions: dict[str, Any]) -> int:
     """Delete rows from a table using validated identifiers and bound values."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
 
     if not where_conditions:
         raise ValueError("where_conditions cannot be empty.")
@@ -356,7 +378,7 @@ def delete_table_rows(table_name: str, where_conditions: dict[str, Any]) -> int:
 def alter_table_add_column(table_name: str, column_name: str, data_type: str) -> None:
     """Add a column using validated identifiers and a simple SQL data type."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     column_identifier = _quote_identifier(column_name, "column name")
     validated_data_type = _validate_data_type(data_type)
@@ -372,7 +394,7 @@ def alter_table_add_column(table_name: str, column_name: str, data_type: str) ->
 def alter_table_drop_column(table_name: str, column_name: str) -> None:
     """Drop a column using validated identifiers."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     column_identifier = _quote_identifier(column_name, "column name")
     query = text(f"ALTER TABLE {table_identifier} DROP COLUMN {column_identifier}")

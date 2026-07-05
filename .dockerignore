@@ -1,0 +1,16 @@
+.env
+.env.docker
+.venv
+__pycache__
+*.pyc
+.git
+logs
+.pytest_cache
+release
+*.zip
+.agents
+.idea
+.mypy_cache
+.ruff_cache
+htmlcov
+.coverage

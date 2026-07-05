@@ -1,0 +1,20 @@
+# Example dashboard roles and permissions.
+# Authentication credentials are still read from environment variables.
+
+admin:
+  permissions:
+    - view_dashboard
+    - edit_alerts
+    - resolve_alerts
+    - export_reports
+    - manage_rules
+
+analyst:
+  permissions:
+    - view_dashboard
+    - resolve_alerts
+    - export_reports
+
+viewer:
+  permissions:
+    - view_dashboard

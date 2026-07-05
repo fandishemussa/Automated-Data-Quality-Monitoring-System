@@ -3,17 +3,17 @@ services:
     image: postgres:16
     container_name: dq_postgres
     env_file:
-      - .env
+      - .env.docker
     environment:
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
-      POSTGRES_DB: ${DB_NAME:-data_quality_db}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: data_quality_db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-data_quality_db}"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d data_quality_db"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -22,10 +22,11 @@ services:
     build: .
     container_name: dq_dashboard
     env_file:
-      - .env
+      - .env.docker
     environment:
       DB_HOST: postgres
-      DB_PORT: 5432
+      SOURCE_DB_HOST: postgres
+      MONITOR_DB_HOST: postgres
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,6 +35,42 @@ services:
     volumes:
       - .:/app
     command: python -m streamlit run dashboard/app.py --server.address=0.0.0.0 --server.port=8501
+
+  api:
+    build: .
+    container_name: dq_api
+    env_file:
+      - .env.docker
+    environment:
+      DB_HOST: postgres
+      SOURCE_DB_HOST: postgres
+      MONITOR_DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    command: python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
+
+  runner:
+    build: .
+    container_name: dq_runner
+    env_file:
+      - .env.docker
+    environment:
+      DB_HOST: postgres
+      SOURCE_DB_HOST: postgres
+      MONITOR_DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    profiles:
+      - tools
+    command: python cli.py --help
 
 volumes:
   postgres_data:

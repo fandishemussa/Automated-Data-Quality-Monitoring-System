@@ -1,8 +1,10 @@
 import sys
 import json
 from datetime import datetime
+from html import escape
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import quote
 
 import altair as alt
 import pandas as pd
@@ -15,17 +17,52 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from data_sources.postgres_connector import create_postgres_engine
+from auth.dashboard_auth import clear_dashboard_login_state, require_dashboard_login
+from data_sources.postgres_connector import create_monitor_engine
 from lineage.lineage_service import get_all_lineage_edges, get_table_lineage
+from ui.charts import (
+    apply_enterprise_chart_theme,
+    score_band_color_scale,
+    severity_color_scale,
+)
+from ui.components import (
+    add_badge_columns,
+    alert_status_badge,
+    empty_state,
+    error_state,
+    metric_card,
+    render_footer,
+    section_header,
+    severity_badge,
+    sla_badge,
+    status_badge,
+    warning_state,
+)
+from ui.theme import (
+    get_brand_config,
+    get_version,
+    inject_enterprise_css,
+    render_app_header,
+    render_sidebar_branding,
+)
 from utils.logger import get_logger
+from utils.config_validator import validate_config
 
+
+BRAND = get_brand_config()
 
 st.set_page_config(
-    page_title="Data Quality Monitoring Dashboard",
+    page_title=BRAND.dashboard_title,
+    page_icon=BRAND.dashboard_icon,
     layout="wide",
 )
 
 logger = get_logger(__name__)
+
+inject_enterprise_css()
+
+if not require_dashboard_login():
+    st.stop()
 
 STATISTICAL_CHECK_TYPES = [
     "z_score_anomaly_check",
@@ -33,23 +70,77 @@ STATISTICAL_CHECK_TYPES = [
     "statistical_check_error",
 ]
 
+DISPLAY_COLUMN_NAMES = {
+    "id": "ID",
+    "run_id": "Run ID",
+    "run_time": "Run Time",
+    "dataset_name": "Dataset",
+    "check_type": "Check Type",
+    "column_name": "Column",
+    "rule": "Rule",
+    "total_rows": "Total Rows",
+    "failed_rows": "Failed Rows",
+    "failure_rate": "Failure Rate",
+    "status": "Status",
+    "status_display": "Status Label",
+    "severity": "Severity",
+    "severity_display": "Severity Label",
+    "row_identifier": "Row",
+    "bad_value": "Bad Value",
+    "reason": "Reason",
+    "sample_row": "Sample Row",
+    "alert_type": "Alert Type",
+    "owner_team": "Owner Team",
+    "owner_email": "Owner Email",
+    "assigned_to": "Assigned To",
+    "message": "Message",
+    "is_resolved": "Resolved",
+    "alert_state": "Alert State",
+    "resolution_notes": "Resolution Notes",
+    "resolved_at": "Resolved At",
+    "created_at": "Created At",
+    "column": "Column",
+    "data_type": "Data Type",
+    "null_count": "Null Count",
+    "null_rate": "Null Rate",
+    "unique_count": "Unique Count",
+    "duplicate_count": "Duplicate Count",
+    "min_value": "Min",
+    "max_value": "Max",
+    "mean": "Mean",
+    "std_dev": "Std Dev",
+    "sla_status": "SLA Status",
+    "sla_display": "SLA Label",
+    "actual_quality_score": "Actual Score",
+    "minimum_quality_score": "Minimum Score",
+    "actual_critical_issues": "Critical Issues",
+    "max_critical_issues": "Critical Limit",
+    "actual_failed_checks": "Failed Checks",
+    "max_failed_checks": "Failed Limit",
+}
+
 
 def load_query(query, table_name):
     """Load dashboard data and return an empty DataFrame on table errors."""
 
     try:
-        engine = create_postgres_engine()
+        engine = create_monitor_engine()
         return pd.read_sql(text(query), engine)
     except SQLAlchemyError:
         logger.exception("Could not load dashboard table %s", table_name)
-        st.warning(
-            f"Could not load `{table_name}`. Run `python database/init_db.py` "
-            "if the monitoring tables have not been created yet."
+        warning_state(
+            "Monitoring table is not available",
+            f"Could not load {table_name}. Initialize the monitoring database and refresh.",
         )
+        st.code("python database/init_db.py", language="powershell")
         return pd.DataFrame()
     except Exception:
         logger.exception("Unexpected dashboard load error for %s", table_name)
-        st.warning("Could not load dashboard data right now. Please check the logs.")
+        error_state(
+            "Dashboard data could not be loaded",
+            "Please check the application logs and database connection settings.",
+            "python cli.py init-db",
+        )
         return pd.DataFrame()
 
 
@@ -108,7 +199,17 @@ def load_sla_results():
     )
 
 
-def update_alert(alert_id, alert_type, severity, message, is_resolved):
+def update_alert(
+    alert_id,
+    alert_type,
+    severity,
+    message,
+    is_resolved,
+    owner_team="",
+    owner_email="",
+    assigned_to="",
+    resolution_notes="",
+):
     """Update alert information from the dashboard."""
 
     query = text("""
@@ -117,12 +218,20 @@ def update_alert(alert_id, alert_type, severity, message, is_resolved):
             alert_type = :alert_type,
             severity = :severity,
             message = :message,
-            is_resolved = :is_resolved
+            owner_team = :owner_team,
+            owner_email = :owner_email,
+            assigned_to = :assigned_to,
+            resolution_notes = :resolution_notes,
+            is_resolved = :is_resolved,
+            resolved_at = CASE
+                WHEN :is_resolved THEN COALESCE(resolved_at, CURRENT_TIMESTAMP)
+                ELSE NULL
+            END
         WHERE id = :alert_id;
     """)
 
     try:
-        engine = create_postgres_engine()
+        engine = create_monitor_engine()
         with engine.begin() as connection:
             result = connection.execute(
                 query,
@@ -131,6 +240,10 @@ def update_alert(alert_id, alert_type, severity, message, is_resolved):
                     "alert_type": alert_type,
                     "severity": severity,
                     "message": message,
+                    "owner_team": owner_team,
+                    "owner_email": owner_email,
+                    "assigned_to": assigned_to,
+                    "resolution_notes": resolution_notes,
                     "is_resolved": bool(is_resolved),
                 },
             )
@@ -208,6 +321,21 @@ def rows_matching(df, column, value):
     return df[df[column] == value]
 
 
+def form_text_value(value):
+    """Return a clean string value for Streamlit form inputs."""
+
+    if value is None:
+        return ""
+
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    return str(value)
+
+
 def filter_details_by_results(details_df, results_df):
     """Keep issue details aligned with status/severity-filtered results."""
 
@@ -262,6 +390,46 @@ def unresolved_alert_count(alerts_df):
         return 0
 
     return len(filter_unresolved_alerts(alerts_df))
+
+
+def _status_to_card(status):
+    """Map a status value to metric card styling."""
+
+    normalized = str(status or "").upper()
+    if normalized in {"PASS", "RESOLVED"}:
+        return "success"
+    if normalized in {"FAIL", "CRITICAL", "HIGH"}:
+        return "error"
+    if normalized in {"WARNING", "MEDIUM"}:
+        return "warning"
+    return "neutral"
+
+
+def _count_status(value):
+    """Return card status based on whether a count is zero."""
+
+    try:
+        return "success" if int(value) == 0 else "error"
+    except (TypeError, ValueError):
+        return "neutral"
+
+
+def current_user_role():
+    """Return the current dashboard role when auth roles are available."""
+
+    return st.session_state.get("dashboard_role", "admin")
+
+
+def can_edit_alerts():
+    """Return whether the current role can edit alerts."""
+
+    return current_user_role() == "admin"
+
+
+def can_resolve_alerts():
+    """Return whether the current role can resolve alerts."""
+
+    return current_user_role() in {"admin", "analyst"}
 
 
 def filter_sla_violations(sla_df):
@@ -319,17 +487,43 @@ def build_quality_trend_frame(runs_df, alerts_df):
     return trend
 
 
-def render_metrics(latest_run, latest_alerts_df):
+def render_metrics(latest_run, latest_alerts_df, latest_sla_df=None):
     """Render latest-run KPI cards."""
 
-    metric_cols = st.columns(7)
-    metric_cols[0].metric("Latest Run ID", int(latest_run["run_id"]))
-    metric_cols[1].metric("Quality Score", f"{latest_run['quality_score']}%")
-    metric_cols[2].metric("Total Checks", int(latest_run["total_checks"]))
-    metric_cols[3].metric("Passed Checks", int(latest_run["passed_checks"]))
-    metric_cols[4].metric("Failed Checks", int(latest_run["failed_checks"]))
-    metric_cols[5].metric("Critical Issues", int(latest_run["critical_checks"]))
-    metric_cols[6].metric("Open Alerts", unresolved_alert_count(latest_alerts_df))
+    latest_sla_df = latest_sla_df if latest_sla_df is not None else pd.DataFrame()
+    sla_status = "UNKNOWN"
+
+    if not latest_sla_df.empty and "sla_status" in latest_sla_df.columns:
+        statuses = latest_sla_df["sla_status"].fillna("UNKNOWN").astype(str).str.upper()
+        sla_status = "FAIL" if (statuses != "PASS").any() else "PASS"
+
+    quality_score = latest_run.get("quality_score", 0)
+    overall_status = latest_run.get("overall_status", "UNKNOWN")
+    open_alerts = unresolved_alert_count(latest_alerts_df)
+
+    metric_cols = st.columns(6)
+    with metric_cols[0]:
+        metric_card(
+            "Quality Score",
+            f"{quality_score}%",
+            "Weighted pass rate across checks",
+            "success" if float(quality_score) >= 90 else "warning",
+        )
+    with metric_cols[1]:
+        metric_card("Overall Status", overall_status, "Latest monitoring run", _status_to_card(overall_status))
+    with metric_cols[2]:
+        metric_card("Total Checks", int(latest_run["total_checks"]), "Executed checks", "info")
+    with metric_cols[3]:
+        metric_card("Failed Checks", int(latest_run["failed_checks"]), "Requires review", _count_status(latest_run["failed_checks"]))
+    with metric_cols[4]:
+        metric_card("Critical Issues", int(latest_run["critical_checks"]), "Highest priority", _count_status(latest_run["critical_checks"]))
+    with metric_cols[5]:
+        metric_card(
+            "Open Alerts",
+            open_alerts,
+            f"SLA {sla_status}",
+            _count_status(open_alerts),
+        )
 
 
 def render_quality_score_trend(runs_df, alerts_df):
@@ -338,7 +532,11 @@ def render_quality_score_trend(runs_df, alerts_df):
     trend_df = build_quality_trend_frame(runs_df, alerts_df)
 
     if trend_df.empty:
-        st.info("No run history available for trend analysis.")
+        empty_state(
+            "No trend data yet",
+            "Run data quality checks to start building quality score history.",
+            "python cli.py run-checks",
+        )
         return
 
     available_runs = len(trend_df)
@@ -388,17 +586,14 @@ def render_quality_score_trend(runs_df, alerts_df):
         color=alt.Color(
             "score_band:N",
             title="Score Band",
-            scale=alt.Scale(
-                domain=["Healthy", "Watch", "Needs attention"],
-                range=["#2e7d32", "#f9a825", "#c62828"],
-            ),
+            scale=score_band_color_scale(),
         ),
     )
 
     rolling_line = base.mark_line(
-        color="#1f77b4",
-        strokeWidth=3,
-        point=alt.OverlayMarkDef(size=70, filled=True),
+        color=BRAND.accent_color,
+        strokeWidth=2.5,
+        point=alt.OverlayMarkDef(size=58, filled=True),
     ).encode(
         y=alt.Y("rolling_average:Q", title="Quality Score (%)"),
     )
@@ -406,21 +601,15 @@ def render_quality_score_trend(runs_df, alerts_df):
     target_line = alt.Chart(
         pd.DataFrame({"target": [target_score]})
     ).mark_rule(
-        color="#444444",
+        color="#94A3B8",
         strokeDash=[6, 4],
-        strokeWidth=2,
+        strokeWidth=1.5,
     ).encode(
         y="target:Q",
         tooltip=[alt.Tooltip("target:Q", title="Target Score")],
     )
 
-    chart = (
-        (bars + rolling_line + target_line)
-        .properties(height=360)
-        .configure_view(strokeWidth=0)
-        .configure_axis(gridColor="#eeeeee", labelColor="#444444", titleColor="#333333")
-        .configure_legend(orient="top", title=None)
-    )
+    chart = apply_enterprise_chart_theme(bars + rolling_line + target_line, height=360)
 
     st.altair_chart(chart, width="stretch")
 
@@ -429,34 +618,38 @@ def render_failed_by_dataset(results_df):
     """Render failed checks by dataset."""
 
     if results_df.empty or "status" not in results_df.columns:
-        st.info("No failed-check data available.")
+        empty_state("No failed-check data", "No check result rows are available for this selection.")
         return
 
     failed_df = results_df[results_df["status"] == "FAIL"]
 
     if failed_df.empty or "dataset_name" not in failed_df.columns:
-        st.success("No failed checks for this selection.")
+        empty_state("No failed checks", "This selection has no failed checks.")
         return
 
     chart_df = failed_df.groupby("dataset_name").size().reset_index(name="failed_checks")
-    chart = alt.Chart(chart_df).mark_bar(cornerRadiusTopRight=5).encode(
+    chart = alt.Chart(chart_df).mark_bar(
+        cornerRadiusTopRight=5,
+        cornerRadiusBottomRight=5,
+        opacity=0.9,
+    ).encode(
         y=alt.Y("dataset_name:N", title=None, sort="-x"),
         x=alt.X("failed_checks:Q", title="Failed Checks", axis=alt.Axis(format="d")),
-        color=alt.value("#c62828"),
+        color=alt.value("#DC2626"),
         tooltip=[
             alt.Tooltip("dataset_name:N", title="Dataset"),
             alt.Tooltip("failed_checks:Q", title="Failed Checks"),
         ],
-    ).properties(height=280).configure_view(strokeWidth=0)
+    )
 
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(apply_enterprise_chart_theme(chart, height=280), width="stretch")
 
 
 def render_issues_by_severity(results_df):
     """Render issues by severity."""
 
     if results_df.empty or "severity" not in results_df.columns:
-        st.info("No severity data available.")
+        empty_state("No severity data", "No severity values are available for this selection.")
         return
 
     severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "NONE", "UNKNOWN"]
@@ -481,68 +674,93 @@ def render_issues_by_severity(results_df):
         color=alt.Color(
             "severity:N",
             legend=None,
-            scale=alt.Scale(
-                domain=severity_order,
-                range=[
-                    "#b71c1c",
-                    "#e65100",
-                    "#f9a825",
-                    "#2e7d32",
-                    "#1565c0",
-                    "#757575",
-                    "#9e9e9e",
-                ],
-            ),
+            scale=severity_color_scale(),
         ),
         tooltip=[
             alt.Tooltip("severity:N", title="Severity"),
             alt.Tooltip("count:Q", title="Checks"),
         ],
-    ).properties(height=280).configure_view(strokeWidth=0)
+    )
 
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(apply_enterprise_chart_theme(chart, height=280), width="stretch")
 
 
 def render_failed_by_check_type(results_df):
     """Render failed checks grouped by check type."""
 
     if results_df.empty or "status" not in results_df.columns:
-        st.info("No check-type data available.")
+        empty_state("No check-type data", "No check-type results are available for this selection.")
         return
 
     failed_df = results_df[results_df["status"] == "FAIL"]
 
     if failed_df.empty or "check_type" not in failed_df.columns:
-        st.success("No failed check types for this selection.")
+        empty_state("No failed check types", "This selection has no failed check types.")
         return
 
     chart_df = failed_df.groupby("check_type").size().reset_index(name="failed_checks")
-    chart = alt.Chart(chart_df).mark_bar(cornerRadiusTopRight=5).encode(
+    chart = alt.Chart(chart_df).mark_bar(
+        cornerRadiusTopRight=5,
+        cornerRadiusBottomRight=5,
+        opacity=0.85,
+    ).encode(
         y=alt.Y("check_type:N", title=None, sort="-x"),
         x=alt.X("failed_checks:Q", title="Failed Checks", axis=alt.Axis(format="d")),
-        color=alt.value("#455a64"),
+        color=alt.value("#DC2626"),
         tooltip=[
             alt.Tooltip("check_type:N", title="Check Type"),
             alt.Tooltip("failed_checks:Q", title="Failed Checks"),
         ],
-    ).properties(height=280).configure_view(strokeWidth=0)
+    )
 
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(apply_enterprise_chart_theme(chart, height=280), width="stretch")
 
 
-def show_dataframe(df, columns=None, empty_message="No records found."):
+def show_dataframe(df, columns=None, empty_message="No records found.", height=420):
     """Render a DataFrame with optional column selection."""
 
     if df.empty:
-        st.info(empty_message)
+        empty_state("No records found", empty_message)
         return
 
+    full_source_df = add_badge_columns(df.copy())
+    df = full_source_df.copy()
+
     if columns:
+        enhanced_columns = []
+        for column in columns:
+            enhanced_columns.append(column)
+            if column == "status" and "status_display" in df.columns:
+                enhanced_columns.append("status_display")
+            if column == "severity" and "severity_display" in df.columns:
+                enhanced_columns.append("severity_display")
+            if column == "sla_status" and "sla_display" in df.columns:
+                enhanced_columns.append("sla_display")
+            if column == "is_resolved" and "alert_state" in df.columns:
+                enhanced_columns.append("alert_state")
+        columns = enhanced_columns
         columns = [column for column in columns if column in df.columns]
         if columns:
             df = df[columns]
 
-    st.dataframe(df, width="stretch", hide_index=True)
+    summary_df = _friendly_dataframe(df)
+    full_df = _friendly_dataframe(full_source_df)
+
+    tabs = st.tabs(["Summary View", "Full Data"])
+    with tabs[0]:
+        st.dataframe(summary_df, width="stretch", hide_index=True, height=height)
+    with tabs[1]:
+        with st.expander("View complete raw table", expanded=False):
+            st.dataframe(full_df, width="stretch", hide_index=True, height=max(height, 480))
+
+
+def _friendly_dataframe(df):
+    """Return a dataframe with user-friendly display column names."""
+
+    return df.rename(columns={
+        column: DISPLAY_COLUMN_NAMES.get(column, column.replace("_", " ").title())
+        for column in df.columns
+    })
 
 
 def parse_json_object(value):
@@ -664,7 +882,7 @@ def render_lineage_matrix(edges_df):
     """Render a lightweight lineage relationship matrix."""
 
     if edges_df.empty:
-        st.info("No lineage relationships found.")
+        empty_state("No lineage relationships", "No configured lineage relationships were found.")
         return
 
     chart = alt.Chart(edges_df).mark_rect(cornerRadius=4).encode(
@@ -695,12 +913,7 @@ def render_lineage_matrix(edges_df):
         text=alt.Text("relationship_type:N"),
     )
 
-    layered_chart = (
-        alt.layer(chart, labels)
-        .configure_view(strokeWidth=0)
-    )
-
-    st.altair_chart(layered_chart, width="stretch")
+    st.altair_chart(apply_enterprise_chart_theme(alt.layer(chart, labels), height=260), width="stretch")
 
 def build_lineage_failure_map(results_df, details_df, edges_df):
     """Map failed referential integrity checks to lineage edges."""
@@ -932,21 +1145,32 @@ def render_dashboard_exports(context):
         )
 
 
-def resolve_alert(alert_id):
+def resolve_alert(alert_id, assigned_to="", resolution_notes=""):
     """Mark a data quality alert as resolved in PostgreSQL."""
 
     query = text(
         """
         UPDATE data_quality_alerts
-        SET is_resolved = TRUE
+        SET
+            is_resolved = TRUE,
+            assigned_to = COALESCE(NULLIF(:assigned_to, ''), assigned_to),
+            resolution_notes = COALESCE(NULLIF(:resolution_notes, ''), resolution_notes),
+            resolved_at = CURRENT_TIMESTAMP
         WHERE id = :alert_id;
         """
     )
 
     try:
-        engine = create_postgres_engine()
+        engine = create_monitor_engine()
         with engine.begin() as connection:
-            result = connection.execute(query, {"alert_id": int(alert_id)})
+            result = connection.execute(
+                query,
+                {
+                    "alert_id": int(alert_id),
+                    "assigned_to": assigned_to,
+                    "resolution_notes": resolution_notes,
+                },
+            )
         return result.rowcount > 0
     except SQLAlchemyError:
         logger.exception("Could not resolve alert %s", alert_id)
@@ -974,7 +1198,11 @@ def render_alert_resolution_cards(open_alerts):
         "run_id",
         "alert_type",
         "severity",
+        "owner_team",
+        "owner_email",
+        "assigned_to",
         "message",
+        "resolution_notes",
         "created_at",
     ]
     show_dataframe(open_alerts, columns=display_columns)
@@ -986,50 +1214,145 @@ def render_alert_resolution_cards(open_alerts):
         alert_type = alert.get("alert_type", "Unknown alert")
         severity = alert.get("severity", "UNKNOWN")
         message = alert.get("message", "")
+        owner_team = alert.get("owner_team", "Unassigned")
+        owner_email = alert.get("owner_email", "")
+        current_assignee = alert.get("assigned_to", "")
+        current_notes = alert.get("resolution_notes", "")
 
         with st.expander(f"Alert #{alert_id} | {severity} | {alert_type}"):
+            st.markdown(
+                f"{severity_badge(severity)} {alert_status_badge(False)}",
+                unsafe_allow_html=True,
+            )
             st.write(message)
+            st.caption(f"Owner: {owner_team} | {owner_email or 'No owner email'}")
 
-            if st.button("Mark as resolved", key=f"resolve_alert_{alert_id}"):
-                if resolve_alert(alert_id):
-                    st.success(f"Alert #{alert_id} marked as resolved.")
-                    st.rerun()
+            if not can_resolve_alerts():
+                st.caption("Your current role can view this alert but cannot resolve it.")
+                continue
+
+            with st.form(f"resolve_alert_form_{alert_id}"):
+                assigned_to = st.text_input(
+                    "Assigned To",
+                    value=form_text_value(current_assignee),
+                )
+                resolution_notes = st.text_area(
+                    "Resolution Notes",
+                    value=form_text_value(current_notes),
+                    height=100,
+                )
+                confirmed = True
+                if str(severity).upper() == "CRITICAL":
+                    confirmed = st.checkbox(
+                        "I confirm this critical alert is ready to resolve.",
+                        key=f"confirm_critical_{alert_id}",
+                    )
+                submitted = st.form_submit_button("Save and mark as resolved")
+
+                if submitted:
+                    if not confirmed:
+                        st.warning("Confirm critical alert resolution before saving.")
+                        return
+                    if resolve_alert(alert_id, assigned_to, resolution_notes):
+                        st.success(f"Alert #{alert_id} marked as resolved.")
+                        st.rerun()
 
 
 def render_overview(context):
-    st.header("Overview")
-    render_metrics(context["latest_run"], context["latest_alerts_df"])
-    st.caption(
-        f"Latest run time: {context['latest_run'].get('run_time', 'N/A')} | "
-        f"Overall status: {context['latest_run'].get('overall_status', 'N/A')}"
+    section_header(
+        "Executive Summary",
+        "A management view of quality score, SLA health, critical issues, and open alerts.",
+    )
+    render_metrics(
+        context["latest_run"],
+        context["latest_alerts_df"],
+        context.get("latest_sla_df"),
     )
 
-    st.divider()
-    render_quality_score_trend(context["runs_df"], context["alerts_df"])
+    st.caption(
+        "Quality score summarizes passing checks. Alerts identify operational follow-up. SLA status tracks dataset-level commitments."
+    )
 
-    st.divider()
+    section_header("Quality Trends", "Track how monitoring health changes across runs.")
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
-        st.subheader("Failed Checks by Dataset")
-        render_failed_by_dataset(context["filtered_results"])
+        render_quality_score_trend(context["runs_df"], context["alerts_df"])
 
     with chart_col2:
-        st.subheader("Issues by Severity")
+        render_failed_by_dataset(context["filtered_results"])
+
+    section_header("Operational Focus", "Critical issues and open alerts requiring review.")
+    focus_col1, focus_col2 = st.columns(2)
+
+    with focus_col1:
+        critical_df = rows_matching(context["filtered_results"], "severity", "CRITICAL")
+        show_dataframe(
+            critical_df,
+            columns=[
+                "dataset_name",
+                "check_type",
+                "column_name",
+                "status",
+                "severity",
+                "failed_rows",
+                "failure_rate",
+            ],
+            empty_message="No critical issues for this selection.",
+        )
+
+    with focus_col2:
+        show_dataframe(
+            filter_unresolved_alerts(context["latest_alerts_df"]),
+            columns=[
+                "alert_type",
+                "severity",
+                "owner_team",
+                "assigned_to",
+                "message",
+                "is_resolved",
+                "created_at",
+            ],
+            empty_message="No open alerts for the latest run.",
+        )
+
+    section_header("Failure Mix", "Failed checks grouped by check type and severity.")
+    mix_col1, mix_col2 = st.columns(2)
+    with mix_col1:
+        render_failed_by_check_type(context["filtered_results"])
+    with mix_col2:
         render_issues_by_severity(context["filtered_results"])
-
-    st.subheader("Failed Checks by Check Type")
-    render_failed_by_check_type(context["filtered_results"])
-
-    st.subheader("Latest Run Alerts")
-    show_dataframe(
-        filter_unresolved_alerts(context["latest_alerts_df"]),
-        empty_message="No open alerts for the latest run.",
-    )
 
 
 def render_check_results(context):
-    st.header("Check Results")
+    section_header(
+        "Check Results",
+        "Review validation results by status, severity, dataset, and check type.",
+    )
+    if not context["filtered_results"].empty:
+        status_counts = (
+            context["filtered_results"].get("status", pd.Series(dtype=str))
+            .fillna("UNKNOWN")
+            .astype(str)
+            .str.upper()
+            .value_counts()
+        )
+        severity_counts = (
+            context["filtered_results"].get("severity", pd.Series(dtype=str))
+            .fillna("UNKNOWN")
+            .astype(str)
+            .str.upper()
+            .value_counts()
+        )
+        status_html = " ".join(
+            f"{status_badge(status)} <span class='muted-text'>{count}</span>"
+            for status, count in status_counts.items()
+        )
+        severity_html = " ".join(
+            f"{severity_badge(severity)} <span class='muted-text'>{count}</span>"
+            for severity, count in severity_counts.items()
+        )
+        st.markdown(f"{status_html}<br>{severity_html}", unsafe_allow_html=True)
 
     tabs = st.tabs(["All Results", "Failed", "Critical", "Anomaly & Drift"])
 
@@ -1110,7 +1433,10 @@ def render_check_results(context):
 
 
 def render_issue_details(context):
-    st.header("Issue Details")
+    section_header(
+        "Issue Details",
+        "Investigate failed-row examples and root-cause context.",
+    )
     show_dataframe(
         context["filtered_details"],
         columns=[
@@ -1132,25 +1458,44 @@ def render_issue_details(context):
 
 
 def render_alerts(context):
-    st.header("Alerts")
+    section_header(
+        "Alert Management",
+        "Triage open alerts, assign owners, capture resolution notes, and review ownership.",
+    )
 
     selected_alerts = context["filtered_alerts"].copy()
     open_alerts = filter_unresolved_alerts(selected_alerts)
     resolved_alerts = filter_resolved_alerts(selected_alerts)
+    critical_alerts = rows_matching(selected_alerts, "severity", "CRITICAL")
 
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Total Alerts", len(selected_alerts))
-    metric_cols[1].metric("Open Alerts", len(open_alerts))
-    metric_cols[2].metric("Resolved Alerts", len(resolved_alerts))
+    metric_cols = st.columns(4)
+    with metric_cols[0]:
+        metric_card("Total Alerts", len(selected_alerts), "Current filters", "info")
+    with metric_cols[1]:
+        metric_card("Open Alerts", len(open_alerts), "Unresolved items", _count_status(len(open_alerts)))
+    with metric_cols[2]:
+        metric_card("Critical Alerts", len(critical_alerts), "Highest severity", _count_status(len(critical_alerts)))
+    with metric_cols[3]:
+        metric_card("Resolved Alerts", len(resolved_alerts), "Closed items", "success")
 
     if context.get("selected_alert_severity") != "All":
         st.caption(f"Alert severity filter: {context['selected_alert_severity']}")
+    if context.get("selected_alert_owner") != "All":
+        st.caption(f"Owner filter: {context['selected_alert_owner']}")
+    if context.get("selected_alert_status") != "All":
+        st.caption(f"Resolved status filter: {context['selected_alert_status']}")
 
     if selected_alerts.empty:
-        st.info("No alerts found for the selected run.")
+        empty_state("No alerts found", "No alerts match the selected filters.")
         return
 
-    tabs = st.tabs(["Unresolved Alerts", "Resolved Alerts", "All Alerts", "Edit Alert"])
+    st.markdown(
+        f"{alert_status_badge(False)} <span class='muted-text'>{len(open_alerts)}</span> "
+        f"{alert_status_badge(True)} <span class='muted-text'>{len(resolved_alerts)}</span>",
+        unsafe_allow_html=True,
+    )
+
+    tabs = st.tabs(["Open Alerts", "Resolved Alerts", "All Alerts", "Edit Alert", "Ownership"])
 
     with tabs[0]:
         render_alert_resolution_cards(open_alerts)
@@ -1158,20 +1503,51 @@ def render_alerts(context):
     with tabs[1]:
         show_dataframe(
             resolved_alerts,
+            columns=[
+                "id",
+                "run_id",
+                "alert_type",
+                "severity",
+                "owner_team",
+                "owner_email",
+                "assigned_to",
+                "message",
+                "resolution_notes",
+                "resolved_at",
+                "created_at",
+            ],
             empty_message="No resolved alerts for this selection.",
         )
 
     with tabs[2]:
         show_dataframe(
             selected_alerts,
+            columns=[
+                "id",
+                "run_id",
+                "alert_type",
+                "severity",
+                "owner_team",
+                "owner_email",
+                "assigned_to",
+                "message",
+                "is_resolved",
+                "resolution_notes",
+                "resolved_at",
+                "created_at",
+            ],
             empty_message="No alerts found for the selected run.",
         )
 
     with tabs[3]:
-        st.subheader("Edit Alert Data")
+        section_header("Edit Alert", "Update assignment, ownership, severity, or resolution notes.")
 
         if "id" not in selected_alerts.columns:
-            st.warning("Cannot edit alerts because the `id` column is missing.")
+            warning_state("Alert IDs missing", "Cannot edit alerts because the id column is missing.")
+            return
+
+        if not can_edit_alerts():
+            warning_state("View-only access", "Your current role can view alerts but cannot edit them.")
             return
 
         alert_ids = selected_alerts["id"].tolist()
@@ -1211,22 +1587,50 @@ def render_alerts(context):
                 value=str(alert_row.get("alert_type", "")),
             )
 
-            severity = st.selectbox(
-                "Severity",
-                options=severity_options,
-                index=severity_options.index(current_severity),
-            )
+            severity_col, owner_col = st.columns(2)
+            with severity_col:
+                severity = st.selectbox(
+                    "Severity",
+                    options=severity_options,
+                    index=severity_options.index(current_severity),
+                )
+            with owner_col:
+                owner_team = st.text_input(
+                    "Owner Team",
+                    value=form_text_value(alert_row.get("owner_team", "")),
+                )
 
             message = st.text_area(
                 "Message",
                 value=str(alert_row.get("message", "")),
-                height=140,
+                height=150,
+            )
+
+            owner_email_col, assigned_col = st.columns(2)
+            with owner_email_col:
+                owner_email = st.text_input(
+                    "Owner Email",
+                    value=form_text_value(alert_row.get("owner_email", "")),
+                )
+            with assigned_col:
+                assigned_to = st.text_input(
+                    "Assigned To",
+                    value=form_text_value(alert_row.get("assigned_to", "")),
+                )
+
+            resolution_notes = st.text_area(
+                "Resolution Notes",
+                value=form_text_value(alert_row.get("resolution_notes", "")),
+                height=130,
             )
 
             is_resolved = st.checkbox(
                 "Resolved",
                 value=bool(current_resolved),
             )
+
+            if is_resolved and str(severity).upper() == "CRITICAL":
+                st.warning("Critical alerts should only be resolved after owner review is complete.")
 
             submitted = st.form_submit_button("Save Alert Changes")
 
@@ -1237,13 +1641,43 @@ def render_alerts(context):
                     severity=severity,
                     message=message,
                     is_resolved=is_resolved,
+                    owner_team=owner_team,
+                    owner_email=owner_email,
+                    assigned_to=assigned_to,
+                    resolution_notes=resolution_notes,
                 ):
                     st.success(f"Alert {selected_alert_id} updated successfully.")
                     st.rerun()
 
+    with tabs[4]:
+        section_header("Ownership", "Alert workload by owner team and assignee.")
+        if selected_alerts.empty:
+            empty_state("No ownership data", "No alerts are available for this selection.")
+        else:
+            ownership_df = selected_alerts.copy()
+            if "owner_team" not in ownership_df.columns:
+                ownership_df["owner_team"] = "Unassigned"
+            if "assigned_to" not in ownership_df.columns:
+                ownership_df["assigned_to"] = "Unassigned"
+            ownership_summary = (
+                ownership_df
+                .fillna({"owner_team": "Unassigned", "assigned_to": "Unassigned"})
+                .groupby(["owner_team", "assigned_to"])
+                .size()
+                .reset_index(name="alert_count")
+                .sort_values("alert_count", ascending=False)
+            )
+            show_dataframe(
+                ownership_summary,
+                empty_message="No ownership summary available.",
+            )
+
 
 def render_data_profiling(context):
-    st.header("Data Profiling")
+    section_header(
+        "Data Profiling",
+        "Column-level shape, null, uniqueness, and numeric profile information.",
+    )
     show_dataframe(
         context["filtered_profiles"],
         columns=[
@@ -1266,12 +1700,18 @@ def render_data_profiling(context):
 
 
 def render_data_lineage(context):
-    st.header("Data Lineage")
+    section_header(
+        "Data Lineage",
+        "Understand upstream and downstream table dependencies.",
+    )
 
     edges_df = context["lineage_edges_df"]
 
     if edges_df.empty:
-        st.info("No lineage configuration found. Add relationships to config/lineage.yaml.")
+        empty_state(
+            "No lineage configuration found",
+            "Add relationships to config/lineage.yaml to visualize dependencies.",
+        )
         return
 
     table_options = lineage_table_options(edges_df)
@@ -1390,7 +1830,10 @@ def render_data_lineage(context):
 
 
 def render_sla_tracking(context):
-    st.header("SLA Tracking")
+    section_header(
+        "SLA Tracking",
+        "Track dataset-level service commitments and historical violations.",
+    )
 
     selected_sla = context["filtered_sla"].copy()
     historical_sla = filter_by_value(
@@ -1402,22 +1845,34 @@ def render_sla_tracking(context):
     historical_violations = filter_sla_violations(historical_sla)
 
     if selected_sla.empty:
-        st.info("No SLA results found for this selection.")
+        empty_state("No SLA results", "No SLA results found for this selection.")
     else:
         status_values = selected_sla["sla_status"].fillna("").astype(str).str.upper()
+        sla_counts = status_values.value_counts()
+        sla_html = " ".join(
+            f"{sla_badge(status)} <span class='muted-text'>{count}</span>"
+            for status, count in sla_counts.items()
+        )
+        st.markdown(sla_html, unsafe_allow_html=True)
         quality_values = pd.to_numeric(
             selected_sla.get("actual_quality_score", pd.Series(dtype=float)),
             errors="coerce",
         )
         avg_quality_score = quality_values.mean()
         metric_cols = st.columns(4)
-        metric_cols[0].metric("Datasets Evaluated", len(selected_sla))
-        metric_cols[1].metric("SLA Met", int((status_values == "PASS").sum()))
-        metric_cols[2].metric("SLA Violations", len(selected_violations))
-        metric_cols[3].metric(
-            "Avg Quality Score",
-            "N/A" if pd.isna(avg_quality_score) else f"{avg_quality_score:.1f}%",
-        )
+        with metric_cols[0]:
+            metric_card("Datasets Evaluated", len(selected_sla), "Current selection", "info")
+        with metric_cols[1]:
+            metric_card("SLA Met", int((status_values == "PASS").sum()), "Passing datasets", "success")
+        with metric_cols[2]:
+            metric_card("SLA Violations", len(selected_violations), "Needs attention", _count_status(len(selected_violations)))
+        with metric_cols[3]:
+            metric_card(
+                "Avg Quality Score",
+                "N/A" if pd.isna(avg_quality_score) else f"{avg_quality_score:.1f}%",
+                "Across selected SLA rows",
+                "neutral",
+            )
 
     st.subheader("Selected Run SLA Status")
     show_dataframe(
@@ -1442,7 +1897,7 @@ def render_sla_tracking(context):
     trend_df = build_sla_trend_frame(historical_sla)
 
     if trend_df.empty:
-        st.info("No historical SLA trend data available.")
+        empty_state("No SLA trend data", "Run multiple monitoring cycles to build an SLA trend.")
     else:
         chart = alt.Chart(trend_df).mark_line(
             color="#1565c0",
@@ -1467,9 +1922,9 @@ def render_sla_tracking(context):
                 alt.Tooltip("passed_datasets:Q", title="SLA Met"),
                 alt.Tooltip("failed_datasets:Q", title="Violations"),
             ],
-        ).properties(height=320).configure_view(strokeWidth=0)
+        )
 
-        st.altair_chart(chart, width="stretch")
+        st.altair_chart(apply_enterprise_chart_theme(chart, height=320), width="stretch")
 
     st.subheader("Historical SLA Violations")
     show_dataframe(
@@ -1492,11 +1947,175 @@ def render_sla_tracking(context):
 
 
 def render_run_history(context):
-    st.header("Run History")
+    section_header("Run History", "Historical monitoring executions and quality scores.")
     show_dataframe(
         context["runs_df"],
         empty_message="No run history found.",
     )
+
+
+def render_setup_wizard(context):
+    """Render setup guidance for first-time users."""
+
+    section_header(
+        "Setup Wizard",
+        "Validate configuration health and follow the recommended setup commands.",
+    )
+
+    if st.button("Refresh setup checks", key="refresh_setup_checks"):
+        st.rerun()
+
+    try:
+        validation_results = validate_config()
+    except Exception:
+        logger.exception("Setup Wizard validation failed.")
+        validation_results = [{
+            "name": "setup validation",
+            "status": "FAIL",
+            "message": "Could not run configuration validation.",
+            "recommended_fix": "python cli.py validate-config",
+        }]
+
+    status_counts = pd.Series(
+        [result["status"] for result in validation_results],
+        dtype=str,
+    ).value_counts()
+
+    command_cols = st.columns(4)
+    with command_cols[0]:
+        metric_card("PASS", int(status_counts.get("PASS", 0)), "Healthy checks", "success")
+    with command_cols[1]:
+        metric_card("WARNING", int(status_counts.get("WARNING", 0)), "Needs attention", "warning")
+    with command_cols[2]:
+        metric_card("FAIL", int(status_counts.get("FAIL", 0)), "Blocking checks", _count_status(status_counts.get("FAIL", 0)))
+    with command_cols[3]:
+        metric_card("Version", get_version(), "Current build", "info")
+
+    st.markdown("#### Health Checklist")
+
+    for result in validation_results:
+        st.markdown(
+            f"""
+            <div class="enterprise-card" style="padding:0.9rem 1rem;margin-bottom:0.55rem;">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;">
+                    <div>
+                        <div style="font-weight:800;">{escape(result["name"])}</div>
+                        <div class="muted-text" style="font-size:0.86rem;margin-top:0.2rem;">
+                            {escape(result["message"])}
+                        </div>
+                    </div>
+                    <div>{status_badge(result["status"])}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if result["status"] != "PASS" and result.get("recommended_fix"):
+            st.code(result["recommended_fix"], language="powershell")
+
+    st.markdown("#### Common Commands")
+
+    show_dataframe(
+        pd.DataFrame([
+            {
+                "Area": "Configuration",
+                "Action": "Copy .env.example to .env and update database credentials.",
+            },
+            {
+                "Area": "Validation",
+                "Action": "Run python cli.py validate-config.",
+            },
+            {
+                "Area": "Database",
+                "Action": "Run python cli.py init-db.",
+            },
+            {
+                "Area": "Demo Data",
+                "Action": "Run python cli.py seed-demo.",
+            },
+            {
+                "Area": "Checks",
+                "Action": "Run python cli.py run-checks.",
+            },
+            {
+                "Area": "Dashboard",
+                "Action": "Run python -m streamlit run dashboard/app.py.",
+            },
+        ]),
+        empty_message="No setup guidance available.",
+    )
+
+
+def render_sidebar_navigation():
+    """Render grouped enterprise navigation and return selected page."""
+
+    navigation_groups = {
+        "Monitoring": [
+            ("Overview", "Overview"),
+            ("Check Results", "Check Results"),
+            ("Issue Details", "Issue Details"),
+            ("Alerts", "Alerts"),
+        ],
+        "Governance": [
+            ("Data Profiling", "Data Profiling"),
+            ("SLA Tracking", "SLA Tracking"),
+            ("Data Lineage", "Data Lineage"),
+        ],
+        "Admin": [
+            ("Setup Wizard", "Setup Wizard"),
+            ("Run History", "Run History"),
+        ],
+    }
+    icons = {
+        "Overview": "▣",
+        "Check Results": "▥",
+        "Issue Details": "◬",
+        "Alerts": "◆",
+        "Data Profiling": "▤",
+        "SLA Tracking": "◴",
+        "Data Lineage": "⧉",
+        "Reports": "▦",
+        "Settings": "⚙",
+        "Setup Wizards": "◫",
+        "Governance": "◫"
+    }
+
+    query_page = st.query_params.get("page")
+    all_pages = {
+        page_value
+        for pages in navigation_groups.values()
+        for _, page_value in pages
+    }
+
+    if query_page in all_pages:
+        st.session_state["dashboard_page"] = query_page
+
+    if "dashboard_page" not in st.session_state:
+        st.session_state["dashboard_page"] = "Overview"
+
+    st.sidebar.markdown('<div class="nav-group-label">Navigation</div>', unsafe_allow_html=True)
+
+    for group_name, pages in navigation_groups.items():
+        st.sidebar.markdown(
+            '<div class="sidebar-section-label">Navigation</div>',
+            unsafe_allow_html=True,
+        )
+
+        for page_name, page_value in pages:
+            is_active = st.session_state["dashboard_page"] == page_value
+            label = f"{icons.get(page_name, '▣')}  {page_name}"
+
+            if st.sidebar.button(
+                    label,
+                    key=f"nav_{page_value.replace(' ', '_').lower()}",
+                    width="stretch",
+                    type="primary" if is_active else "secondary",
+            ):
+                st.session_state["dashboard_page"] = page_value
+                st.query_params["page"] = page_value
+                st.rerun()
+    inject_sidebar_nav_css()
+    return st.session_state["dashboard_page"]
 
 
 def build_sidebar_filters(
@@ -1510,23 +2129,27 @@ def build_sidebar_filters(
 ):
     """Build sidebar navigation and filters."""
 
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio(
-        "Section",
-        [
-            "Overview",
-            "Check Results",
-            "Issue Details",
-            "Alerts",
-            "Data Profiling",
-            "Data Lineage",
-            "SLA Tracking",
-            "Run History",
-        ],
-    )
+    render_sidebar_branding()
+    page = render_sidebar_navigation()
+
+    authenticated_user = st.session_state.get("dashboard_authenticated_user")
+    if authenticated_user:
+        role = current_user_role()
+        st.sidebar.markdown(
+            f"""
+            <div class="sidebar-user-card">
+                <div class="sidebar-user-name">{escape(str(authenticated_user))}</div>
+                <div class="sidebar-user-role">Role: {escape(str(role))}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.sidebar.button("Logout", key="dashboard_logout", width="stretch"):
+            clear_dashboard_login_state(st.session_state)
+            st.rerun()
 
     st.sidebar.divider()
-    st.sidebar.subheader("Filters")
+    st.sidebar.markdown('<div class="nav-group-label">Filters</div>', unsafe_allow_html=True)
 
     run_ids = runs_df["run_id"].tolist()
     selected_run_id = st.sidebar.selectbox("Run ID", options=run_ids, index=0)
@@ -1573,6 +2196,31 @@ def build_sidebar_filters(
     )
     filtered_alerts = filter_by_value(run_alerts, "severity", selected_alert_severity)
 
+    selected_alert_owner = st.sidebar.selectbox(
+        "Alert Owner Team",
+        options=["All"] + unique_options(filtered_alerts, "owner_team"),
+    )
+    filtered_alerts = filter_by_value(filtered_alerts, "owner_team", selected_alert_owner)
+
+    selected_alert_assignee = st.sidebar.selectbox(
+        "Assigned To",
+        options=["All"] + unique_options(filtered_alerts, "assigned_to"),
+    )
+    filtered_alerts = filter_by_value(filtered_alerts, "assigned_to", selected_alert_assignee)
+
+    selected_alert_status = st.sidebar.selectbox(
+        "Resolved Status",
+        options=["All", "Open", "Resolved"],
+    )
+
+    if selected_alert_status == "Open":
+        filtered_alerts = filter_unresolved_alerts(filtered_alerts)
+    elif selected_alert_status == "Resolved":
+        filtered_alerts = filter_resolved_alerts(filtered_alerts)
+
+    st.sidebar.divider()
+    st.sidebar.caption(f"Version: {get_version()}")
+
     return {
         "page": page,
         "selected_run_id": selected_run_id,
@@ -1580,17 +2228,93 @@ def build_sidebar_filters(
         "selected_status": selected_status,
         "selected_severity": selected_severity,
         "selected_alert_severity": selected_alert_severity,
+        "selected_alert_owner": selected_alert_owner,
+        "selected_alert_assignee": selected_alert_assignee,
+        "selected_alert_status": selected_alert_status,
         "filtered_results": filtered_results,
         "filtered_details": filtered_details,
         "filtered_alerts": filtered_alerts,
         "filtered_profiles": dataset_profiles,
         "filtered_sla": dataset_sla,
     }
+def inject_sidebar_nav_css() -> None:
+    st.markdown(
+        """
+        <style>
+        /* Sidebar navigation buttons */
+        section[data-testid="stSidebar"] div.stButton > button {
+            width: 100%;
+            justify-content: flex-start;
+            text-align: left;
+            border-radius: 12px;
+            padding: 0.68rem 0.85rem;
+            margin: 0.12rem 0 0.35rem 0;
+            font-weight: 650;
+            letter-spacing: 0.01em;
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            background: rgba(15, 23, 42, 0.35);
+            color: rgba(226, 232, 240, 0.86);
+            box-shadow: none;
+            transition: all 160ms ease;
+        }
 
+        section[data-testid="stSidebar"] div.stButton > button:hover {
+            transform: translateX(2px);
+            border-color: rgba(96, 165, 250, 0.55);
+            background: rgba(30, 41, 59, 0.78);
+            color: #ffffff;
+        }
+
+        /* Active navigation item */
+        section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {
+            position: relative;
+            border-left: 5px solid #38bdf8;
+            border-top: 1px solid rgba(56, 189, 248, 0.70);
+            border-right: 1px solid rgba(56, 189, 248, 0.40);
+            border-bottom: 1px solid rgba(56, 189, 248, 0.40);
+            background: linear-gradient(
+                90deg,
+                rgba(14, 165, 233, 0.34),
+                rgba(30, 41, 59, 0.78)
+            );
+            color: #ffffff;
+            font-weight: 800;
+            box-shadow:
+                inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+                0 8px 22px rgba(14, 165, 233, 0.18);
+        }
+
+        section[data-testid="stSidebar"] div.stButton > button[kind="primary"]::before {
+            content: "●";
+            color: #22c55e;
+            font-size: 0.62rem;
+            margin-right: 0.45rem;
+            line-height: 1;
+        }
+
+        section[data-testid="stSidebar"] div.stButton > button[kind="primary"]:hover {
+            transform: translateX(2px);
+            background: linear-gradient(
+                90deg,
+                rgba(14, 165, 233, 0.44),
+                rgba(30, 41, 59, 0.88)
+            );
+        }
+
+        .sidebar-section-label {
+            margin: 1.2rem 0 0.55rem 0;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.11em;
+            color: rgba(148, 163, 184, 0.86);
+            text-transform: uppercase;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def main():
-    st.title("Automated Data Quality Monitoring Dashboard")
-
     runs_df = load_quality_runs()
     results_df = load_quality_results()
     details_df = load_issue_details()
@@ -1600,18 +2324,30 @@ def main():
     lineage_edges_df = load_lineage_edges()
 
     if runs_df.empty or "run_id" not in runs_df.columns:
-        st.warning("No data quality runs found. Run `python main.py` first.")
+        render_app_header(status="SETUP", last_refresh=datetime.now())
+        warning_state(
+            "No data quality runs found",
+            "Run checks to generate the first monitoring run, then refresh this dashboard.",
+        )
+        st.code("python cli.py run-checks", language="powershell")
         render_data_lineage({
             "lineage_edges_df": lineage_edges_df,
             "filtered_results": pd.DataFrame(),
             "filtered_details": pd.DataFrame(),
             "selected_dataset": "All",
         })
+        render_footer()
         return
 
     latest_run = runs_df.iloc[0]
     latest_run_id = int(latest_run["run_id"])
     latest_alerts_df = filter_by_value(alerts_df, "run_id", latest_run_id)
+    latest_sla_df = filter_by_value(sla_df, "run_id", latest_run_id)
+
+    render_app_header(
+        status=latest_run.get("overall_status", "UNKNOWN"),
+        last_refresh=datetime.now(),
+    )
 
     filters = build_sidebar_filters(
         runs_df,
@@ -1632,6 +2368,7 @@ def main():
         "lineage_edges_df": lineage_edges_df,
         "latest_run": latest_run,
         "latest_alerts_df": latest_alerts_df,
+        "latest_sla_df": latest_sla_df,
         "export_timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
         **filters,
     }
@@ -1645,9 +2382,11 @@ def main():
         "Data Profiling": render_data_profiling,
         "Data Lineage": render_data_lineage,
         "SLA Tracking": render_sla_tracking,
+        "Setup Wizard": render_setup_wizard,
         "Run History": render_run_history,
     }
     pages[filters["page"]](context)
+    render_footer()
 
 
 if __name__ == "__main__":

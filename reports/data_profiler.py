@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import text
 
-from data_sources.postgres_connector import create_postgres_engine
+from data_sources.postgres_connector import create_monitor_engine
 from utils.logger import get_logger
 
 
@@ -247,7 +247,7 @@ def profile_dataframe(df, dataset_name):
 def ensure_profile_table_exists(engine=None):
     """Create the profiling results table if it does not already exist."""
 
-    engine = engine or create_postgres_engine()
+    engine = engine or create_monitor_engine()
 
     with engine.begin() as connection:
         connection.execute(text(CREATE_PROFILE_TABLE_SQL))
@@ -262,7 +262,7 @@ def save_profile_results_to_postgres(run_id, profile_results):
         logger.info("No data profile results to save for run %s.", run_id)
         return 0
 
-    engine = create_postgres_engine()
+    engine = create_monitor_engine()
     ensure_profile_table_exists(engine)
 
     rows = [

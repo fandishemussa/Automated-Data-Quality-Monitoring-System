@@ -44,3 +44,13 @@ This project uses two categories of tables: source tables that are monitored and
 | `data_profile_results` | Column-level profiling statistics. |
 | `data_quality_sla_results` | Dataset SLA status, actual metrics, thresholds, and violation reasons per run. |
 | `data_lineage_edges` | Optional persisted source-to-target lineage relationships. |
+
+### data_quality_alerts Ownership Columns
+
+| Column | Description |
+|---|---|
+| `owner_team` | Team responsible for the alert based on ownership rules. |
+| `owner_email` | Contact email for the owning team. |
+| `assigned_to` | Person currently assigned to follow up. |
+| `resolution_notes` | Notes captured during alert resolution. |
+| `resolved_at` | Timestamp when the alert was marked resolved. |
