@@ -221,7 +221,7 @@ Dashboard branding and theme are controlled by these values:
 APP_NAME=Automated Data Quality Monitoring System
 COMPANY_NAME=Your Company
 DASHBOARD_TITLE=Data Quality Command Center
-DASHBOARD_ICON=📊
+DASHBOARD_ICON=▣
 ENVIRONMENT_NAME=Development
 DASHBOARD_THEME=light
 DEMO_BRANDING_MODE=false
