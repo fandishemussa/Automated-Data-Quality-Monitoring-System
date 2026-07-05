@@ -13,9 +13,18 @@ jobs:
     name: Test Python project
     runs-on: ubuntu-latest
 
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Show project structure
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 2 -type f | sort
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,8 +39,15 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      - name: Check imports
+        run: |
+          python -c "import checks; print('checks OK:', checks.__file__)"
+          python -c "import lineage; print('lineage OK:', lineage.__file__)"
+          python -c "import reports; print('reports OK:', reports.__file__)"
+          python -c "import sla; print('sla OK:', sla.__file__)"
+
       - name: Syntax check
         run: python -m compileall .
 
       - name: Run unit tests
-        run: python -m pytest tests -q
+        run: python -m pytest tests/ -q
