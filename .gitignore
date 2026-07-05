@@ -18,5 +18,4 @@ htmlcov/
 .agents/*
 .agents
 .idea
-release/
-*.zip
+
