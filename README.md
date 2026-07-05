@@ -458,7 +458,6 @@ Dashboard capabilities:
 
 ## Dashboard Screenshots
 
-```text
 docs/screenshots/overview.png
 docs/screenshots/overview1.png
 docs/screenshots/check-results.png
@@ -466,7 +465,6 @@ docs/screenshots/alerts.png
 docs/screenshots/screen4.png
 docs/screenshots/screen5.png
 docs/screenshots/screen6.png
-```
 
 ## Documentation
 
