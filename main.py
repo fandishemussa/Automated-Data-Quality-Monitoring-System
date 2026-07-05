@@ -1,11 +1,17 @@
 from alerts.alert_manager import create_alerts_for_run
 from checks.anomaly_checks import run_statistical_checks
+from checks.drift_detection import run_advanced_drift_checks_for_datasets
 from checks.rule_engine import run_rules_for_dataset
 from config.rule_loader import load_rules
 from data_sources.postgres_connector import get_table_names, load_table
 from reports.data_profiler import profile_and_save_datasets
-from reports.generate_report import save_results_to_postgres
+from reports.generate_report import (
+    append_results_to_existing_run,
+    save_results_to_postgres,
+    update_run_summary,
+)
 from reports.quality_score import calculate_quality_score
+from sla.sla_checker import evaluate_sla_for_run, save_sla_results
 from utils.logger import get_logger
 from notifications.mailtrap_notifier import send_mailtrap_alert_email
 logger = get_logger(__name__)
@@ -98,6 +104,33 @@ def main():
         )
     except Exception:
         logger.exception("Data profiling failed for run %s.", run_id)
+
+    drift_results = run_advanced_drift_checks_for_datasets(
+        datasets=loaded_datasets,
+        global_rules=global_rules,
+        current_run_id=run_id,
+    )
+
+    if drift_results:
+        append_results_to_existing_run(run_id, drift_results)
+        all_results.extend(drift_results)
+        summary = update_run_summary(run_id, all_results)
+        logger.info(
+            "Saved %s advanced drift result(s) for run %s.",
+            len(drift_results),
+            run_id,
+        )
+
+    try:
+        sla_results = evaluate_sla_for_run(run_id, all_results)
+        saved_sla_count = save_sla_results(sla_results)
+        logger.info(
+            "Saved %s SLA tracking result(s) for run %s.",
+            saved_sla_count,
+            run_id,
+        )
+    except Exception:
+        logger.exception("SLA evaluation failed for run %s.", run_id)
 
     created_alerts = create_alerts_for_run(run_id, summary)
 

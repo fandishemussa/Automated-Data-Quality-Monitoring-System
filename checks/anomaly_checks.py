@@ -1,4 +1,4 @@
-"""Statistical anomaly and drift checks for numeric dataset columns."""
+"""Statistical anomaly checks for numeric dataset columns."""
 
 import pandas as pd
 from sqlalchemy import text
@@ -267,7 +267,12 @@ def check_mean_drift(
 
 
 def run_statistical_checks(df, dataset_name, global_rules):
-    """Run enabled anomaly and drift checks for a dataset."""
+    """Run enabled anomaly checks for a dataset.
+
+    Advanced drift checks now live in `checks.drift_detection` and run after
+    profiling, when the current run has profile metrics to compare with
+    historical baselines.
+    """
 
     if not isinstance(df, pd.DataFrame):
         return [
@@ -293,7 +298,6 @@ def run_statistical_checks(df, dataset_name, global_rules):
 
     results = []
     anomaly_config = global_rules.get("anomaly_detection", {})
-    drift_config = global_rules.get("data_drift_detection", {})
 
     try:
         if _enabled(anomaly_config) and _z_score_enabled(anomaly_config):
@@ -306,19 +310,6 @@ def run_statistical_checks(df, dataset_name, global_rules):
                     df,
                     dataset_name,
                     threshold=float(z_score_threshold),
-                )
-            )
-
-        if _enabled(drift_config):
-            threshold_percent = drift_config.get(
-                "mean_change_threshold_percent",
-                DEFAULT_MEAN_DRIFT_THRESHOLD_PERCENT,
-            )
-            results.extend(
-                check_mean_drift(
-                    df,
-                    dataset_name,
-                    threshold_percent=float(threshold_percent),
                 )
             )
     except Exception as exc:

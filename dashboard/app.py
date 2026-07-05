@@ -1,4 +1,7 @@
 import sys
+import json
+from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import altair as alt
@@ -13,12 +16,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_sources.postgres_connector import create_postgres_engine
+from lineage.lineage_service import get_all_lineage_edges, get_table_lineage
+from utils.logger import get_logger
 
 
 st.set_page_config(
     page_title="Data Quality Monitoring Dashboard",
     layout="wide",
 )
+
+logger = get_logger(__name__)
 
 STATISTICAL_CHECK_TYPES = [
     "z_score_anomaly_check",
@@ -30,16 +37,19 @@ STATISTICAL_CHECK_TYPES = [
 def load_query(query, table_name):
     """Load dashboard data and return an empty DataFrame on table errors."""
 
-    engine = create_postgres_engine()
-
     try:
+        engine = create_postgres_engine()
         return pd.read_sql(text(query), engine)
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
+        logger.exception("Could not load dashboard table %s", table_name)
         st.warning(
             f"Could not load `{table_name}`. Run `python database/init_db.py` "
             "if the monitoring tables have not been created yet."
         )
-        st.caption(str(exc))
+        return pd.DataFrame()
+    except Exception:
+        logger.exception("Unexpected dashboard load error for %s", table_name)
+        st.warning("Could not load dashboard data right now. Please check the logs.")
         return pd.DataFrame()
 
 
@@ -85,10 +95,21 @@ def load_alerts():
         """,
         "data_quality_alerts",
     )
+
+
+def load_sla_results():
+    return load_query(
+        """
+        SELECT *
+        FROM data_quality_sla_results
+        ORDER BY id DESC;
+        """,
+        "data_quality_sla_results",
+    )
+
+
 def update_alert(alert_id, alert_type, severity, message, is_resolved):
     """Update alert information from the dashboard."""
-
-    engine = create_postgres_engine()
 
     query = text("""
         UPDATE data_quality_alerts
@@ -101,8 +122,9 @@ def update_alert(alert_id, alert_type, severity, message, is_resolved):
     """)
 
     try:
+        engine = create_postgres_engine()
         with engine.begin() as connection:
-            connection.execute(
+            result = connection.execute(
                 query,
                 {
                     "alert_id": int(alert_id),
@@ -113,35 +135,17 @@ def update_alert(alert_id, alert_type, severity, message, is_resolved):
                 },
             )
 
-        return True
+        return result.rowcount > 0
 
-    except SQLAlchemyError as exc:
-        st.error("Could not update alert.")
-        st.caption(str(exc))
+    except SQLAlchemyError:
+        logger.exception("Could not update alert %s", alert_id)
+        st.error("Could not update this alert right now. Please check the logs.")
+        return False
+    except Exception:
+        logger.exception("Unexpected alert update error for %s", alert_id)
+        st.error("Could not update this alert right now. Please check the logs.")
         return False
 
-
-def resolve_alert(alert_id):
-    """Mark an alert as resolved."""
-
-    engine = create_postgres_engine()
-
-    query = text("""
-        UPDATE data_quality_alerts
-        SET is_resolved = TRUE
-        WHERE id = :alert_id;
-    """)
-
-    try:
-        with engine.begin() as connection:
-            connection.execute(query, {"alert_id": int(alert_id)})
-
-        return True
-
-    except SQLAlchemyError as exc:
-        st.error("Could not resolve alert.")
-        st.caption(str(exc))
-        return False
 
 def load_profile_results():
     return load_query(
@@ -152,6 +156,29 @@ def load_profile_results():
         """,
         "data_profile_results",
     )
+
+
+def load_lineage_edges():
+    """Load lineage edges from config/lineage.yaml for dashboard display."""
+
+    try:
+        edges = get_all_lineage_edges()
+    except Exception:
+        logger.exception("Could not load lineage configuration.")
+        st.warning("Could not load data lineage configuration. Check config/lineage.yaml.")
+        return pd.DataFrame()
+
+    columns = [
+        "source_table",
+        "source_column",
+        "target_table",
+        "target_column",
+        "relationship_type",
+        "description",
+        "relationship",
+    ]
+
+    return pd.DataFrame(edges, columns=columns)
 
 
 def unique_options(df, column):
@@ -235,6 +262,16 @@ def unresolved_alert_count(alerts_df):
         return 0
 
     return len(filter_unresolved_alerts(alerts_df))
+
+
+def filter_sla_violations(sla_df):
+    """Return SLA rows that did not meet the configured thresholds."""
+
+    if sla_df.empty or "sla_status" not in sla_df.columns:
+        return sla_df.iloc[0:0].copy()
+
+    status_values = sla_df["sla_status"].fillna("").astype(str).str.upper()
+    return sla_df[status_values != "PASS"]
 
 
 def build_quality_trend_frame(runs_df, alerts_df):
@@ -508,10 +545,396 @@ def show_dataframe(df, columns=None, empty_message="No records found."):
     st.dataframe(df, width="stretch", hide_index=True)
 
 
+def parse_json_object(value):
+    """Parse a JSON object string and return an empty dict on invalid input."""
+
+    if value is None:
+        return {}
+
+    if not isinstance(value, (str, bytes)):
+        try:
+            if pd.isna(value):
+                return {}
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def build_drift_summary(results_df, details_df):
+    """Build a readable drift summary from result rows and issue details."""
+
+    if results_df.empty or "check_type" not in results_df.columns:
+        return pd.DataFrame()
+
+    drift_results = results_df[results_df["check_type"] == "data_drift_check"].copy()
+
+    if drift_results.empty:
+        return pd.DataFrame()
+
+    detail_lookup = {}
+
+    if not details_df.empty and "result_id" in details_df.columns:
+        drift_details = details_df[details_df["check_type"] == "data_drift_check"]
+
+        for _, detail in drift_details.iterrows():
+            result_id = detail.get("result_id")
+            if pd.notna(result_id) and result_id not in detail_lookup:
+                detail_lookup[result_id] = detail
+
+    rows = []
+
+    for _, result in drift_results.iterrows():
+        detail = detail_lookup.get(result.get("id"))
+        payload = {}
+        reason = ""
+
+        if detail is not None:
+            payload = parse_json_object(detail.get("sample_row"))
+            reason = detail.get("reason", "")
+
+        rows.append({
+            "dataset_name": result.get("dataset_name"),
+            "column_name": result.get("column_name"),
+            "drift_method": payload.get("drift_method", "baseline_check"),
+            "baseline_value": payload.get("baseline_value"),
+            "current_value": payload.get("current_value"),
+            "percent_change": payload.get("percent_change"),
+            "metric_value": payload.get("metric_value"),
+            "threshold": payload.get("threshold"),
+            "distribution_difference": payload.get("distribution_difference"),
+            "chi_square_p_value": payload.get("chi_square_p_value"),
+            "rule": result.get("rule"),
+            "status": result.get("status"),
+            "severity": result.get("severity"),
+            "reason": reason,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def build_sla_trend_frame(sla_df):
+    """Prepare SLA pass-rate trend data by run."""
+
+    if sla_df.empty or "run_id" not in sla_df.columns or "sla_status" not in sla_df.columns:
+        return pd.DataFrame()
+
+    trend = sla_df.copy()
+    trend["sla_status"] = trend["sla_status"].fillna("UNKNOWN").astype(str).str.upper()
+    trend["is_pass"] = trend["sla_status"] == "PASS"
+
+    trend_df = (
+        trend.groupby("run_id")
+        .agg(
+            datasets=("dataset_name", "nunique"),
+            passed_datasets=("is_pass", "sum"),
+            failed_datasets=("is_pass", lambda values: int((~values).sum())),
+        )
+        .reset_index()
+        .sort_values("run_id")
+    )
+    trend_df["sla_pass_rate"] = (
+        trend_df["passed_datasets"] / trend_df["datasets"] * 100
+    ).round(2)
+    trend_df["run_label"] = trend_df["run_id"].astype(str)
+
+    return trend_df
+
+
+def lineage_table_options(edges_df):
+    """Return table names present in the lineage edge list."""
+
+    if edges_df.empty:
+        return []
+
+    tables = set()
+
+    for column in ["source_table", "target_table"]:
+        if column in edges_df.columns:
+            tables.update(edges_df[column].dropna().astype(str).tolist())
+
+    return sorted(tables)
+
+def render_lineage_matrix(edges_df):
+    """Render a lightweight lineage relationship matrix."""
+
+    if edges_df.empty:
+        st.info("No lineage relationships found.")
+        return
+
+    chart = alt.Chart(edges_df).mark_rect(cornerRadius=4).encode(
+        x=alt.X("target_table:N", title="Downstream Table"),
+        y=alt.Y("source_table:N", title="Upstream Table"),
+        color=alt.Color(
+            "relationship_type:N",
+            title="Relationship Type",
+            scale=alt.Scale(range=["#1565c0", "#2e7d32", "#f9a825", "#6a1b9a"]),
+        ),
+        tooltip=[
+            alt.Tooltip("source_table:N", title="Source Table"),
+            alt.Tooltip("source_column:N", title="Source Column"),
+            alt.Tooltip("target_table:N", title="Target Table"),
+            alt.Tooltip("target_column:N", title="Target Column"),
+            alt.Tooltip("relationship_type:N", title="Type"),
+            alt.Tooltip("description:N", title="Description"),
+        ],
+    ).properties(height=260)
+
+    labels = alt.Chart(edges_df).mark_text(
+        color="white",
+        fontSize=12,
+        fontWeight="bold",
+    ).encode(
+        x=alt.X("target_table:N"),
+        y=alt.Y("source_table:N"),
+        text=alt.Text("relationship_type:N"),
+    )
+
+    layered_chart = (
+        alt.layer(chart, labels)
+        .configure_view(strokeWidth=0)
+    )
+
+    st.altair_chart(layered_chart, width="stretch")
+
+def build_lineage_failure_map(results_df, details_df, edges_df):
+    """Map failed referential integrity checks to lineage edges."""
+
+    if results_df.empty or edges_df.empty or "check_type" not in results_df.columns:
+        return pd.DataFrame()
+
+    failed_checks = results_df[
+        (results_df["check_type"] == "referential_integrity_check")
+        & (results_df["status"] == "FAIL")
+    ].copy()
+
+    if failed_checks.empty:
+        return pd.DataFrame()
+
+    detail_lookup = {}
+
+    if (
+        not details_df.empty
+        and "result_id" in details_df.columns
+        and "check_type" in details_df.columns
+    ):
+        ri_details = details_df[
+            details_df["check_type"] == "referential_integrity_check"
+        ]
+
+        for _, detail in ri_details.iterrows():
+            result_id = detail.get("result_id")
+            if pd.notna(result_id) and result_id not in detail_lookup:
+                detail_lookup[result_id] = detail
+
+    rows = []
+
+    for _, check in failed_checks.iterrows():
+        dataset_name = check.get("dataset_name")
+        column_name = check.get("column_name")
+        matching_edges = edges_df[
+            (
+                (edges_df["target_table"] == dataset_name)
+                & (edges_df["target_column"] == column_name)
+            )
+            | (
+                (edges_df["source_table"] == dataset_name)
+                & (edges_df["source_column"] == column_name)
+            )
+        ]
+
+        if matching_edges.empty:
+            matching_edges = pd.DataFrame([{
+                "source_table": None,
+                "source_column": None,
+                "target_table": dataset_name,
+                "target_column": column_name,
+                "relationship_type": "unmapped",
+                "description": "No matching lineage relationship found.",
+            }])
+
+        detail = detail_lookup.get(check.get("id"))
+
+        for _, edge in matching_edges.iterrows():
+            rows.append({
+                "run_id": check.get("run_id"),
+                "dataset_name": dataset_name,
+                "check_column": column_name,
+                "source": (
+                    f"{edge.get('source_table')}.{edge.get('source_column')}"
+                    if edge.get("source_table")
+                    else None
+                ),
+                "target": (
+                    f"{edge.get('target_table')}.{edge.get('target_column')}"
+                    if edge.get("target_table")
+                    else None
+                ),
+                "relationship_type": edge.get("relationship_type"),
+                "failed_rows": check.get("failed_rows"),
+                "severity": check.get("severity"),
+                "reason": detail.get("reason", "") if detail is not None else "",
+                "description": edge.get("description"),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def safe_filename_part(value):
+    """Return a filesystem-friendly piece for export filenames."""
+
+    text_value = str(value).strip() if value not in (None, "") else "all"
+    return "".join(
+        character if character.isalnum() or character in ("-", "_") else "_"
+        for character in text_value
+    )
+
+
+def build_export_filename(stem, run_id, extension, timestamp):
+    """Build an export filename with run ID and date/time."""
+
+    return (
+        f"{safe_filename_part(stem)}_run_{safe_filename_part(run_id)}_"
+        f"{timestamp}.{extension}"
+    )
+
+
+def dataframe_to_csv_bytes(df):
+    """Convert a DataFrame to CSV bytes for Streamlit downloads."""
+
+    return df.to_csv(index=False).encode("utf-8")
+
+
+def render_csv_download(container, label, df, stem, context, key):
+    """Render a CSV download button for the provided DataFrame."""
+
+    run_id = context.get("selected_run_id", "all")
+    timestamp = context.get("export_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
+    file_name = build_export_filename(stem, run_id, "csv", timestamp)
+    export_df = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    container.download_button(
+        label=label,
+        data=dataframe_to_csv_bytes(export_df),
+        file_name=file_name,
+        mime="text/csv",
+        key=key,
+        disabled=export_df.empty,
+    )
+
+
+def build_excel_report(context):
+    """Create an Excel workbook containing the current dashboard report data."""
+
+    output = BytesIO()
+    selected_run = filter_by_value(
+        context["runs_df"],
+        "run_id",
+        context["selected_run_id"],
+    )
+    sheets = {
+        "Run Summary": selected_run,
+        "Check Results": context["filtered_results"],
+        "Issue Details": context["filtered_details"],
+        "Alerts": context["filtered_alerts"],
+        "SLA Results": context.get("filtered_sla", pd.DataFrame()),
+    }
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            export_df = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+            if export_df.empty:
+                export_df = pd.DataFrame({"message": ["No records for this selection."]})
+            export_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    output.seek(0)
+    return output.getvalue()
+
+
+def render_dashboard_exports(context):
+    """Render dashboard-wide report download controls."""
+
+    st.sidebar.divider()
+    with st.sidebar.expander("Downloads", expanded=False) as export_panel:
+        render_csv_download(
+            export_panel,
+            "Check results CSV",
+            context["filtered_results"],
+            "check_results",
+            context,
+            "download_check_results_csv",
+        )
+        render_csv_download(
+            export_panel,
+            "Issue details CSV",
+            context["filtered_details"],
+            "issue_details",
+            context,
+            "download_issue_details_csv",
+        )
+        render_csv_download(
+            export_panel,
+            "Alerts CSV",
+            context["filtered_alerts"],
+            "alerts",
+            context,
+            "download_alerts_csv",
+        )
+        render_csv_download(
+            export_panel,
+            "SLA results CSV",
+            context.get("filtered_sla", pd.DataFrame()),
+            "sla_results",
+            context,
+            "download_sla_results_csv",
+        )
+        render_csv_download(
+            export_panel,
+            "Run history CSV",
+            context["runs_df"],
+            "run_history",
+            context,
+            "download_run_history_csv",
+        )
+
+        try:
+            excel_data = build_excel_report(context)
+        except ImportError:
+            logger.exception("openpyxl is not installed for Excel export")
+            export_panel.info("Excel export needs `openpyxl`. Install requirements and reload.")
+            return
+        except Exception:
+            logger.exception("Could not build dashboard Excel export")
+            export_panel.info("Excel export is unavailable right now. Please check the logs.")
+            return
+
+        timestamp = context.get("export_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
+        file_name = build_export_filename(
+            "data_quality_report",
+            context.get("selected_run_id", "all"),
+            "xlsx",
+            timestamp,
+        )
+        export_panel.download_button(
+            label="Excel report",
+            data=excel_data,
+            file_name=file_name,
+            mime=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            key="download_excel_report",
+        )
+
+
 def resolve_alert(alert_id):
     """Mark a data quality alert as resolved in PostgreSQL."""
 
-    engine = create_postgres_engine()
     query = text(
         """
         UPDATE data_quality_alerts
@@ -521,12 +944,17 @@ def resolve_alert(alert_id):
     )
 
     try:
+        engine = create_postgres_engine()
         with engine.begin() as connection:
             result = connection.execute(query, {"alert_id": int(alert_id)})
         return result.rowcount > 0
-    except SQLAlchemyError as exc:
-        st.error("Could not resolve the alert. Please check the database connection.")
-        st.caption(str(exc))
+    except SQLAlchemyError:
+        logger.exception("Could not resolve alert %s", alert_id)
+        st.error("Could not resolve this alert right now. Please check the logs.")
+        return False
+    except Exception:
+        logger.exception("Unexpected alert resolution error for %s", alert_id)
+        st.error("Could not resolve this alert right now. Please check the logs.")
         return False
 
 
@@ -643,6 +1071,32 @@ def render_check_results(context):
             empty_message="No anomaly or drift checks found for this selection.",
         )
 
+        drift_summary = build_drift_summary(
+            context["filtered_results"],
+            context["filtered_details"],
+        )
+
+        st.subheader("Drift Detection")
+        show_dataframe(
+            drift_summary,
+            columns=[
+                "dataset_name",
+                "column_name",
+                "drift_method",
+                "baseline_value",
+                "current_value",
+                "percent_change",
+                "metric_value",
+                "threshold",
+                "distribution_difference",
+                "chi_square_p_value",
+                "status",
+                "severity",
+                "reason",
+            ],
+            empty_message="No drift detection results found for this selection.",
+        )
+
         if "check_type" in context["filtered_details"].columns:
             statistical_details = context["filtered_details"][
                 context["filtered_details"]["check_type"].isin(STATISTICAL_CHECK_TYPES)
@@ -681,69 +1135,37 @@ def render_alerts(context):
     st.header("Alerts")
 
     selected_alerts = context["filtered_alerts"].copy()
+    open_alerts = filter_unresolved_alerts(selected_alerts)
+    resolved_alerts = filter_resolved_alerts(selected_alerts)
 
     metric_cols = st.columns(3)
     metric_cols[0].metric("Total Alerts", len(selected_alerts))
-    metric_cols[1].metric("Open Alerts", unresolved_alert_count(selected_alerts))
-    metric_cols[2].metric(
-        "Resolved Alerts",
-        max(len(selected_alerts) - unresolved_alert_count(selected_alerts), 0),
-    )
+    metric_cols[1].metric("Open Alerts", len(open_alerts))
+    metric_cols[2].metric("Resolved Alerts", len(resolved_alerts))
+
+    if context.get("selected_alert_severity") != "All":
+        st.caption(f"Alert severity filter: {context['selected_alert_severity']}")
 
     if selected_alerts.empty:
         st.info("No alerts found for the selected run.")
         return
 
-    tabs = st.tabs(["All Alerts", "Open Alerts", "Resolved Alerts", "Edit Alert"])
+    tabs = st.tabs(["Unresolved Alerts", "Resolved Alerts", "All Alerts", "Edit Alert"])
 
     with tabs[0]:
+        render_alert_resolution_cards(open_alerts)
+
+    with tabs[1]:
+        show_dataframe(
+            resolved_alerts,
+            empty_message="No resolved alerts for this selection.",
+        )
+
+    with tabs[2]:
         show_dataframe(
             selected_alerts,
             empty_message="No alerts found for the selected run.",
         )
-
-    with tabs[1]:
-        open_alerts = filter_unresolved_alerts(selected_alerts)
-
-        if open_alerts.empty:
-            st.success("No open alerts for this selection.")
-        else:
-            show_dataframe(open_alerts)
-
-            st.subheader("Quick Resolve")
-
-            alert_ids = open_alerts["id"].tolist()
-
-            selected_resolve_id = st.selectbox(
-                "Select alert to resolve",
-                options=alert_ids,
-                key="resolve_alert_id",
-            )
-
-            if st.button("Mark selected alert as resolved"):
-                if resolve_alert(selected_resolve_id):
-                    st.success(f"Alert {selected_resolve_id} marked as resolved.")
-                    st.rerun()
-
-    with tabs[2]:
-        if "is_resolved" not in selected_alerts.columns:
-            st.info("Alert resolution column is not available.")
-        else:
-            resolved_values = selected_alerts["is_resolved"].fillna(False)
-
-            if resolved_values.dtype == object:
-                resolved_mask = resolved_values.astype(str).str.lower().isin(
-                    ["true", "1", "yes"]
-                )
-            else:
-                resolved_mask = resolved_values == True
-
-            resolved_alerts = selected_alerts[resolved_mask]
-
-            show_dataframe(
-                resolved_alerts,
-                empty_message="No resolved alerts for this selection.",
-            )
 
     with tabs[3]:
         st.subheader("Edit Alert Data")
@@ -818,6 +1240,8 @@ def render_alerts(context):
                 ):
                     st.success(f"Alert {selected_alert_id} updated successfully.")
                     st.rerun()
+
+
 def render_data_profiling(context):
     st.header("Data Profiling")
     show_dataframe(
@@ -834,9 +1258,236 @@ def render_data_profiling(context):
             "min_value",
             "max_value",
             "mean",
+            "std_dev",
             "created_at",
         ],
         empty_message="No profiling results found for this selection.",
+    )
+
+
+def render_data_lineage(context):
+    st.header("Data Lineage")
+
+    edges_df = context["lineage_edges_df"]
+
+    if edges_df.empty:
+        st.info("No lineage configuration found. Add relationships to config/lineage.yaml.")
+        return
+
+    table_options = lineage_table_options(edges_df)
+    default_table = context.get("selected_dataset")
+
+    if default_table not in table_options:
+        default_table = "All"
+
+    selected_table = st.selectbox(
+        "Lineage Table",
+        options=["All"] + table_options,
+        index=(["All"] + table_options).index(default_table),
+    )
+
+    active_edges = edges_df.copy()
+
+    if selected_table != "All":
+        active_edges = edges_df[
+            (edges_df["source_table"] == selected_table)
+            | (edges_df["target_table"] == selected_table)
+        ]
+
+    failed_lineage_df = build_lineage_failure_map(
+        context["filtered_results"],
+        context["filtered_details"],
+        edges_df,
+    )
+
+    if selected_table != "All" and not failed_lineage_df.empty:
+        selected_token = f"{selected_table}."
+        failed_lineage_df = failed_lineage_df[
+            failed_lineage_df["source"].fillna("").str.startswith(selected_token)
+            | failed_lineage_df["target"].fillna("").str.startswith(selected_token)
+            | (failed_lineage_df["dataset_name"] == selected_table)
+        ]
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Lineage Tables", len(table_options))
+    metric_cols[1].metric("Relationships", len(active_edges))
+    metric_cols[2].metric("Failed Lineage Checks", len(failed_lineage_df))
+
+    st.subheader("Relationship Matrix")
+    render_lineage_matrix(active_edges)
+
+    if selected_table != "All":
+        table_lineage = get_table_lineage(selected_table)
+        st.caption(
+            f"{table_lineage.get('description', 'No description')} | "
+            f"Primary key: {table_lineage.get('primary_key') or 'N/A'}"
+        )
+
+        upstream_col, downstream_col = st.columns(2)
+
+        with upstream_col:
+            st.subheader("Upstream Dependencies")
+            show_dataframe(
+                pd.DataFrame(table_lineage["upstream"]),
+                columns=[
+                    "source_table",
+                    "source_column",
+                    "target_table",
+                    "target_column",
+                    "relationship_type",
+                    "description",
+                ],
+                empty_message="No upstream dependencies configured.",
+            )
+
+        with downstream_col:
+            st.subheader("Downstream Dependencies")
+            show_dataframe(
+                pd.DataFrame(table_lineage["downstream"]),
+                columns=[
+                    "source_table",
+                    "source_column",
+                    "target_table",
+                    "target_column",
+                    "relationship_type",
+                    "description",
+                ],
+                empty_message="No downstream dependencies configured.",
+            )
+
+    st.subheader("Lineage Relationships")
+    show_dataframe(
+        active_edges,
+        columns=[
+            "source_table",
+            "source_column",
+            "target_table",
+            "target_column",
+            "relationship_type",
+            "description",
+            "relationship",
+        ],
+        empty_message="No lineage relationships found for this selection.",
+    )
+
+    st.subheader("Failed Checks Mapped To Lineage")
+    show_dataframe(
+        failed_lineage_df,
+        columns=[
+            "run_id",
+            "dataset_name",
+            "check_column",
+            "source",
+            "target",
+            "relationship_type",
+            "failed_rows",
+            "severity",
+            "reason",
+            "description",
+        ],
+        empty_message="No failed referential integrity checks for this lineage selection.",
+    )
+
+
+def render_sla_tracking(context):
+    st.header("SLA Tracking")
+
+    selected_sla = context["filtered_sla"].copy()
+    historical_sla = filter_by_value(
+        context["sla_df"],
+        "dataset_name",
+        context.get("selected_dataset", "All"),
+    )
+    selected_violations = filter_sla_violations(selected_sla)
+    historical_violations = filter_sla_violations(historical_sla)
+
+    if selected_sla.empty:
+        st.info("No SLA results found for this selection.")
+    else:
+        status_values = selected_sla["sla_status"].fillna("").astype(str).str.upper()
+        quality_values = pd.to_numeric(
+            selected_sla.get("actual_quality_score", pd.Series(dtype=float)),
+            errors="coerce",
+        )
+        avg_quality_score = quality_values.mean()
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Datasets Evaluated", len(selected_sla))
+        metric_cols[1].metric("SLA Met", int((status_values == "PASS").sum()))
+        metric_cols[2].metric("SLA Violations", len(selected_violations))
+        metric_cols[3].metric(
+            "Avg Quality Score",
+            "N/A" if pd.isna(avg_quality_score) else f"{avg_quality_score:.1f}%",
+        )
+
+    st.subheader("Selected Run SLA Status")
+    show_dataframe(
+        selected_sla,
+        columns=[
+            "run_id",
+            "dataset_name",
+            "minimum_quality_score",
+            "actual_quality_score",
+            "max_critical_issues",
+            "actual_critical_issues",
+            "max_failed_checks",
+            "actual_failed_checks",
+            "sla_status",
+            "reason",
+            "created_at",
+        ],
+        empty_message="No SLA status rows found for this run.",
+    )
+
+    st.subheader("SLA Trend Over Runs")
+    trend_df = build_sla_trend_frame(historical_sla)
+
+    if trend_df.empty:
+        st.info("No historical SLA trend data available.")
+    else:
+        chart = alt.Chart(trend_df).mark_line(
+            color="#1565c0",
+            strokeWidth=3,
+            point=alt.OverlayMarkDef(size=80, filled=True),
+        ).encode(
+            x=alt.X(
+                "run_label:N",
+                title="Run ID",
+                sort=list(trend_df["run_label"]),
+                axis=alt.Axis(labelAngle=0),
+            ),
+            y=alt.Y(
+                "sla_pass_rate:Q",
+                title="SLA Pass Rate (%)",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
+            tooltip=[
+                alt.Tooltip("run_id:O", title="Run ID"),
+                alt.Tooltip("sla_pass_rate:Q", title="SLA Pass Rate", format=".1f"),
+                alt.Tooltip("datasets:Q", title="Datasets"),
+                alt.Tooltip("passed_datasets:Q", title="SLA Met"),
+                alt.Tooltip("failed_datasets:Q", title="Violations"),
+            ],
+        ).properties(height=320).configure_view(strokeWidth=0)
+
+        st.altair_chart(chart, width="stretch")
+
+    st.subheader("Historical SLA Violations")
+    show_dataframe(
+        historical_violations,
+        columns=[
+            "run_id",
+            "dataset_name",
+            "actual_quality_score",
+            "minimum_quality_score",
+            "actual_critical_issues",
+            "max_critical_issues",
+            "actual_failed_checks",
+            "max_failed_checks",
+            "sla_status",
+            "reason",
+            "created_at",
+        ],
+        empty_message="No SLA violations found for this dataset selection.",
     )
 
 
@@ -848,7 +1499,15 @@ def render_run_history(context):
     )
 
 
-def build_sidebar_filters(runs_df, results_df, details_df, alerts_df, profiles_df):
+def build_sidebar_filters(
+    runs_df,
+    results_df,
+    details_df,
+    alerts_df,
+    profiles_df,
+    sla_df,
+    lineage_edges_df,
+):
     """Build sidebar navigation and filters."""
 
     st.sidebar.title("Navigation")
@@ -860,6 +1519,8 @@ def build_sidebar_filters(runs_df, results_df, details_df, alerts_df, profiles_d
             "Issue Details",
             "Alerts",
             "Data Profiling",
+            "Data Lineage",
+            "SLA Tracking",
             "Run History",
         ],
     )
@@ -874,11 +1535,14 @@ def build_sidebar_filters(runs_df, results_df, details_df, alerts_df, profiles_d
     run_details = filter_by_value(details_df, "run_id", selected_run_id)
     run_alerts = filter_by_value(alerts_df, "run_id", selected_run_id)
     run_profiles = filter_by_value(profiles_df, "run_id", selected_run_id)
+    run_sla = filter_by_value(sla_df, "run_id", selected_run_id)
 
     dataset_options = sorted(set(
         unique_options(run_results, "dataset_name")
         + unique_options(run_details, "dataset_name")
         + unique_options(run_profiles, "dataset_name")
+        + unique_options(run_sla, "dataset_name")
+        + lineage_table_options(lineage_edges_df)
     ))
     selected_dataset = st.sidebar.selectbox(
         "Dataset",
@@ -888,6 +1552,7 @@ def build_sidebar_filters(runs_df, results_df, details_df, alerts_df, profiles_d
     dataset_results = filter_by_value(run_results, "dataset_name", selected_dataset)
     dataset_details = filter_by_value(run_details, "dataset_name", selected_dataset)
     dataset_profiles = filter_by_value(run_profiles, "dataset_name", selected_dataset)
+    dataset_sla = filter_by_value(run_sla, "dataset_name", selected_dataset)
 
     selected_status = st.sidebar.selectbox(
         "Status",
@@ -902,16 +1567,24 @@ def build_sidebar_filters(runs_df, results_df, details_df, alerts_df, profiles_d
     filtered_results = filter_by_value(filtered_results, "severity", selected_severity)
     filtered_details = filter_details_by_results(dataset_details, filtered_results)
 
+    selected_alert_severity = st.sidebar.selectbox(
+        "Alert Severity",
+        options=["All"] + unique_options(run_alerts, "severity"),
+    )
+    filtered_alerts = filter_by_value(run_alerts, "severity", selected_alert_severity)
+
     return {
         "page": page,
         "selected_run_id": selected_run_id,
         "selected_dataset": selected_dataset,
         "selected_status": selected_status,
         "selected_severity": selected_severity,
+        "selected_alert_severity": selected_alert_severity,
         "filtered_results": filtered_results,
         "filtered_details": filtered_details,
-        "filtered_alerts": run_alerts,
+        "filtered_alerts": filtered_alerts,
         "filtered_profiles": dataset_profiles,
+        "filtered_sla": dataset_sla,
     }
 
 
@@ -923,9 +1596,17 @@ def main():
     details_df = load_issue_details()
     alerts_df = load_alerts()
     profiles_df = load_profile_results()
+    sla_df = load_sla_results()
+    lineage_edges_df = load_lineage_edges()
 
     if runs_df.empty or "run_id" not in runs_df.columns:
         st.warning("No data quality runs found. Run `python main.py` first.")
+        render_data_lineage({
+            "lineage_edges_df": lineage_edges_df,
+            "filtered_results": pd.DataFrame(),
+            "filtered_details": pd.DataFrame(),
+            "selected_dataset": "All",
+        })
         return
 
     latest_run = runs_df.iloc[0]
@@ -938,6 +1619,8 @@ def main():
         details_df,
         alerts_df,
         profiles_df,
+        sla_df,
+        lineage_edges_df,
     )
     context = {
         "runs_df": runs_df,
@@ -945,10 +1628,14 @@ def main():
         "details_df": details_df,
         "alerts_df": alerts_df,
         "profiles_df": profiles_df,
+        "sla_df": sla_df,
+        "lineage_edges_df": lineage_edges_df,
         "latest_run": latest_run,
         "latest_alerts_df": latest_alerts_df,
+        "export_timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
         **filters,
     }
+    render_dashboard_exports(context)
 
     pages = {
         "Overview": render_overview,
@@ -956,6 +1643,8 @@ def main():
         "Issue Details": render_issue_details,
         "Alerts": render_alerts,
         "Data Profiling": render_data_profiling,
+        "Data Lineage": render_data_lineage,
+        "SLA Tracking": render_sla_tracking,
         "Run History": render_run_history,
     }
     pages[filters["page"]](context)

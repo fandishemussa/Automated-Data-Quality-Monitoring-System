@@ -1,4 +1,9 @@
-def calculate_quality_score(results):
+from typing import Any
+
+
+def calculate_quality_score(results: list[dict[str, Any]]) -> float:
+    """Calculate the percentage of passing checks, ignoring skipped checks."""
+
     valid_results = [
         result for result in results
         if result["status"] in ["PASS", "FAIL"]

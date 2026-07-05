@@ -1,0 +1,21 @@
+customers:
+  description: Customer master table
+  primary_key: customer_id
+  downstream:
+    - table: orders
+      relationship: customers.customer_id -> orders.customer_id
+      relationship_type: foreign_key
+      description: Orders belong to customers through customer_id.
+
+orders:
+  description: Customer order table
+  primary_key: order_id
+  upstream:
+    - table: customers
+      relationship: orders.customer_id -> customers.customer_id
+      relationship_type: foreign_key
+      description: Each order should reference an existing customer.
+
+products:
+  description: Product master table
+  primary_key: product_id

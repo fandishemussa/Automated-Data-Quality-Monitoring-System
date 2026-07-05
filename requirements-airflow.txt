@@ -1,0 +1,6 @@
+# Optional dependencies for running the Airflow DAG.
+# Keep Apache Airflow out of requirements.txt because it is a large
+# orchestration runtime and is not needed for local Streamlit/Python usage.
+
+apache-airflow==2.9.3
+-r requirements.txt

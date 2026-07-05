@@ -77,6 +77,22 @@ CREATE_TABLE_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS data_quality_sla_results (
+        id SERIAL PRIMARY KEY,
+        run_id INT,
+        dataset_name VARCHAR(100),
+        minimum_quality_score FLOAT,
+        actual_quality_score FLOAT,
+        max_critical_issues INT,
+        actual_critical_issues INT,
+        max_failed_checks INT,
+        actual_failed_checks INT,
+        sla_status VARCHAR(20),
+        reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS data_profile_results (
         id SERIAL PRIMARY KEY,
         run_id INT,
@@ -91,6 +107,28 @@ CREATE_TABLE_STATEMENTS = [
         min_value TEXT,
         max_value TEXT,
         mean FLOAT,
+        std_dev FLOAT,
+        value_distribution TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    ALTER TABLE IF EXISTS data_profile_results
+    ADD COLUMN IF NOT EXISTS std_dev FLOAT
+    """,
+    """
+    ALTER TABLE IF EXISTS data_profile_results
+    ADD COLUMN IF NOT EXISTS value_distribution TEXT
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS data_lineage_edges (
+        id SERIAL PRIMARY KEY,
+        source_table VARCHAR(100),
+        source_column VARCHAR(100),
+        target_table VARCHAR(100),
+        target_column VARCHAR(100),
+        relationship_type VARCHAR(100),
+        description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,

@@ -147,7 +147,10 @@ global_rules:
 
   data_drift_detection:
     enabled: true
-    mean_change_threshold_percent: 20
+    baseline_runs: 3
+    mean_change_threshold_percent: 25
+    std_change_threshold_percent: 30
+    psi_threshold: 0.2
     statistical_tests:
       - chi_square
       - kolmogorov_smirnov

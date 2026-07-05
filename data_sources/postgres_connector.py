@@ -1,8 +1,9 @@
 import re
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import Engine, URL
 
 from config.settings import DATABASE
 from utils.logger import get_logger
@@ -14,7 +15,7 @@ IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DATA_TYPE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_ ]*(\([0-9,\s]+\))?$")
 
 
-def _validate_identifier(identifier, label="identifier"):
+def _validate_identifier(identifier: str, label: str = "identifier") -> str:
     """Validate table and column names before composing SQL statements."""
 
     if not isinstance(identifier, str) or not IDENTIFIER_PATTERN.match(identifier):
@@ -26,13 +27,13 @@ def _validate_identifier(identifier, label="identifier"):
     return identifier
 
 
-def _quote_identifier(identifier, label="identifier"):
+def _quote_identifier(identifier: str, label: str = "identifier") -> str:
     """Return a safely quoted PostgreSQL identifier after validation."""
 
     return f'"{_validate_identifier(identifier, label)}"'
 
 
-def _validate_data_type(data_type):
+def _validate_data_type(data_type: str) -> str:
     """Validate simple SQL data types used by the helper DDL functions."""
 
     if not isinstance(data_type, str) or not DATA_TYPE_PATTERN.match(data_type):
@@ -44,7 +45,7 @@ def _validate_data_type(data_type):
     return data_type
 
 
-def create_postgres_engine():
+def create_postgres_engine() -> Engine:
     """Create a SQLAlchemy engine using validated environment settings."""
 
     logger.debug(
@@ -67,7 +68,9 @@ def create_postgres_engine():
     return engine
 
 
-def load_table(table_name):
+def load_table(table_name: str) -> pd.DataFrame:
+    """Load all rows from a validated PostgreSQL table name."""
+
     engine = create_postgres_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     query = text(f"SELECT * FROM {table_identifier}")
@@ -76,7 +79,9 @@ def load_table(table_name):
     return df
 
 
-def get_table_names():
+def get_table_names() -> list[str]:
+    """Return public table names from the connected PostgreSQL database."""
+
     engine = create_postgres_engine()
     query = text("""
             SELECT table_name
@@ -88,7 +93,9 @@ def get_table_names():
     return df['table_name'].tolist()
 
 
-def get_table_columns(table_name):
+def get_table_columns(table_name: str) -> list[str]:
+    """Return column names for a public PostgreSQL table."""
+
     engine = create_postgres_engine()
     query = text("""
         SELECT column_name
@@ -101,7 +108,9 @@ def get_table_columns(table_name):
     return df['column_name'].tolist()
 
 
-def get_table_dtypes(table_name):
+def get_table_dtypes(table_name: str) -> dict[str, str]:
+    """Return PostgreSQL data types keyed by column name."""
+
     engine = create_postgres_engine()
     query = text("""
         SELECT column_name, data_type
@@ -114,7 +123,9 @@ def get_table_dtypes(table_name):
     return df.set_index('column_name')['data_type'].to_dict()
 
 
-def get_table_stats(table_name):
+def get_table_stats(table_name: str) -> dict[str, int]:
+    """Return simple row-count statistics for a table."""
+
     engine = create_postgres_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     query = text(f"SELECT COUNT(*) AS row_count FROM {table_identifier}")
@@ -123,7 +134,9 @@ def get_table_stats(table_name):
     return {"row_count": int(df.iloc[0]["row_count"])}
 
 
-def get_table_null_count(table_name):
+def get_table_null_count(table_name: str) -> dict[str, Any]:
+    """Return null counts for every column in a table."""
+
     engine = create_postgres_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     columns = get_table_columns(table_name)
@@ -142,7 +155,9 @@ def get_table_null_count(table_name):
     return df.iloc[0].to_dict()
 
 
-def get_table_distinct_count(table_name, column_name):
+def get_table_distinct_count(table_name: str, column_name: str) -> int:
+    """Return distinct value count for one table column."""
+
     engine = create_postgres_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     column_identifier = _quote_identifier(column_name, "column name")
@@ -160,7 +175,9 @@ def get_table_distinct_count(table_name, column_name):
     return distinct_count
 
 
-def get_table_distinct_values(table_name, column_name):
+def get_table_distinct_values(table_name: str, column_name: str) -> list[Any]:
+    """Return distinct values for one table column."""
+
     engine = create_postgres_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     column_identifier = _quote_identifier(column_name, "column name")
@@ -175,7 +192,9 @@ def get_table_distinct_values(table_name, column_name):
     return values
 
 
-def get_table_sample(table_name, n=10):
+def get_table_sample(table_name: str, n: int = 10) -> pd.DataFrame:
+    """Return a small sample of rows from a table."""
+
     engine = create_postgres_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     query = text(f"SELECT * FROM {table_identifier} LIMIT :limit")
@@ -184,7 +203,9 @@ def get_table_sample(table_name, n=10):
     return df
 
 
-def get_table_description(table_name):
+def get_table_description(table_name: str) -> pd.DataFrame:
+    """Return column metadata for a public table."""
+
     engine = create_postgres_engine()
     query = text("""
         SELECT column_name, data_type, is_nullable
@@ -197,7 +218,9 @@ def get_table_description(table_name):
     return df
 
 
-def get_table_size(table_name):
+def get_table_size(table_name: str) -> str:
+    """Return PostgreSQL's human-readable total relation size."""
+
     engine = create_postgres_engine()
     query = text("""
         SELECT pg_size_pretty(pg_total_relation_size(to_regclass(:table_name)))
@@ -208,7 +231,9 @@ def get_table_size(table_name):
     return table_size
 
 
-def get_table_indexes(table_name):
+def get_table_indexes(table_name: str) -> pd.DataFrame:
+    """Return PostgreSQL index definitions for a table."""
+
     engine = create_postgres_engine()
     query = text("""
         SELECT indexname, indexdef
@@ -221,7 +246,9 @@ def get_table_indexes(table_name):
     return df
 
 
-def get_table_foreign_keys(table_name):
+def get_table_foreign_keys(table_name: str) -> pd.DataFrame:
+    """Return foreign-key metadata for a table."""
+
     engine = create_postgres_engine()
     query = text("""
         SELECT
@@ -238,7 +265,9 @@ def get_table_foreign_keys(table_name):
     return df
 
 
-def get_table_primary_keys(table_name):
+def get_table_primary_keys(table_name: str) -> pd.DataFrame:
+    """Return primary-key column names for a table."""
+
     engine = create_postgres_engine()
     query = text("""
         SELECT a.attname
@@ -254,7 +283,13 @@ def get_table_primary_keys(table_name):
     return df
 
 
-def update_table(table_name, update_values, where_conditions):
+def update_table(
+    table_name: str,
+    update_values: dict[str, Any],
+    where_conditions: dict[str, Any],
+) -> int:
+    """Update table rows using validated identifiers and bound values."""
+
     engine = create_postgres_engine()
 
     if not update_values:
@@ -293,7 +328,9 @@ def update_table(table_name, update_values, where_conditions):
         return result.rowcount
 
 
-def delete_table_rows(table_name, where_conditions):
+def delete_table_rows(table_name: str, where_conditions: dict[str, Any]) -> int:
+    """Delete rows from a table using validated identifiers and bound values."""
+
     engine = create_postgres_engine()
 
     if not where_conditions:
@@ -316,7 +353,9 @@ def delete_table_rows(table_name, where_conditions):
         return result.rowcount
 
 
-def alter_table_add_column(table_name, column_name, data_type):
+def alter_table_add_column(table_name: str, column_name: str, data_type: str) -> None:
+    """Add a column using validated identifiers and a simple SQL data type."""
+
     engine = create_postgres_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     column_identifier = _quote_identifier(column_name, "column name")
@@ -330,7 +369,9 @@ def alter_table_add_column(table_name, column_name, data_type):
     logger.info("Added column %s to table %s.", column_name, table_name)
 
 
-def alter_table_drop_column(table_name, column_name):
+def alter_table_drop_column(table_name: str, column_name: str) -> None:
+    """Drop a column using validated identifiers."""
+
     engine = create_postgres_engine()
     table_identifier = _quote_identifier(table_name, "table name")
     column_identifier = _quote_identifier(column_name, "column name")

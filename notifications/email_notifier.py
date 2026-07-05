@@ -1,3 +1,7 @@
+"""SMTP email notification helpers for data quality alerts."""
+
+from __future__ import annotations
+
 import os
 import smtplib
 from email.message import EmailMessage
@@ -12,6 +16,8 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 def get_bool_env(key: str, default: bool = False) -> bool:
+    """Read a boolean environment variable."""
+
     value = os.getenv(key)
 
     if value is None:
@@ -21,6 +27,8 @@ def get_bool_env(key: str, default: bool = False) -> bool:
 
 
 def get_alert_recipients() -> list[str]:
+    """Return alert recipient email addresses from ALERT_RECIPIENTS."""
+
     recipients = os.getenv("ALERT_RECIPIENTS", "")
 
     return [
@@ -33,8 +41,10 @@ def get_alert_recipients() -> list[str]:
 def build_alert_email_body(
     run_id: int,
     summary: dict[str, Any],
-    alerts: list[dict[str, Any]]
+    alerts: list[dict[str, Any]],
 ) -> str:
+    """Build a plain-text alert email body."""
+
     total_checks = summary.get("total_checks", 0)
     passed_checks = summary.get("passed_checks", 0)
     failed_checks = summary.get("failed_checks", 0)
@@ -42,18 +52,14 @@ def build_alert_email_body(
     quality_score = summary.get("quality_score", 0)
     overall_status = summary.get("overall_status", "UNKNOWN")
 
-    alert_lines = []
-
-    for alert in alerts:
-        alert_lines.append(
-            f"""
+    alert_details = "\n".join(
+        f"""
 Alert Type: {alert.get("alert_type")}
 Severity: {alert.get("severity")}
 Message: {alert.get("message")}
 """
-        )
-
-    alert_details = "\n".join(alert_lines)
+        for alert in alerts
+    )
 
     body = f"""
 Automated Data Quality Monitoring Alert
@@ -86,8 +92,10 @@ This message was generated automatically by the Automated Data Quality Monitorin
 def build_alert_email_html(
     run_id: int,
     summary: dict[str, Any],
-    alerts: list[dict[str, Any]]
+    alerts: list[dict[str, Any]],
 ) -> str:
+    """Build an HTML alert email body."""
+
     total_checks = summary.get("total_checks", 0)
     passed_checks = summary.get("passed_checks", 0)
     failed_checks = summary.get("failed_checks", 0)
@@ -109,7 +117,7 @@ def build_alert_email_html(
     html = f"""
     <html>
         <body style="font-family: Arial, sans-serif; color: #222;">
-            <h2>🚨 Automated Data Quality Alert</h2>
+            <h2>Automated Data Quality Alert</h2>
 
             <p>
                 A data quality run has completed with issues that require attention.
@@ -178,10 +186,12 @@ def build_alert_email_html(
 
 
 def send_email(subject: str, plain_body: str, html_body: str | None = None) -> bool:
+    """Send an alert email using SMTP settings from the environment."""
+
     enabled = get_bool_env("EMAIL_NOTIFICATIONS_ENABLED", False)
 
     if not enabled:
-        print("📧 Email notifications are disabled.")
+        print("Email notifications are disabled.")
         return False
 
     smtp_host = os.getenv("SMTP_HOST")
@@ -192,11 +202,11 @@ def send_email(subject: str, plain_body: str, html_body: str | None = None) -> b
     recipients = get_alert_recipients()
 
     if not smtp_host or not smtp_user or not smtp_password:
-        print("⚠️ Email settings are incomplete. Check SMTP_HOST, SMTP_USER, and SMTP_PASSWORD.")
+        print("Email settings are incomplete. Check SMTP_HOST, SMTP_USER, and SMTP_PASSWORD.")
         return False
 
     if not recipients:
-        print("⚠️ No alert recipients configured. Check ALERT_RECIPIENTS.")
+        print("No alert recipients configured. Check ALERT_RECIPIENTS.")
         return False
 
     message = EmailMessage()
@@ -214,21 +224,23 @@ def send_email(subject: str, plain_body: str, html_body: str | None = None) -> b
             server.login(smtp_user, smtp_password)
             server.send_message(message)
 
-        print(f"📧 Email notification sent to: {', '.join(recipients)}")
+        print(f"Email notification sent to: {', '.join(recipients)}")
         return True
 
     except Exception as error:
-        print(f"❌ Failed to send email notification: {error}")
+        print(f"Failed to send email notification: {error}")
         return False
 
 
 def send_alert_email(
     run_id: int,
     summary: dict[str, Any],
-    alerts: list[dict[str, Any]]
+    alerts: list[dict[str, Any]],
 ) -> bool:
+    """Build and send a data quality alert email with SMTP."""
+
     if not alerts:
-        print("✅ No alerts found. Email notification skipped.")
+        print("No alerts found. Email notification skipped.")
         return False
 
     quality_score = summary.get("quality_score", 0)
