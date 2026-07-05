@@ -12,15 +12,19 @@ The project is designed to be beginner-friendly while still showing professional
 - Failed-row issue details for root cause analysis
 - Data lineage metadata for source-table relationships
 - Historical SLA tracking for dataset quality targets
-- Alert generation and alert resolution from the dashboard
+- Role-based alert ownership with assignment and resolution notes
+- Alert generation, Slack/Teams/email notifications, and alert resolution from the dashboard
+- Dashboard authentication with environment-based credentials
+- Enterprise UI theme, branded header/sidebar, light/dark mode, and customizable assets
 - Streamlit dashboard with filters, charts, run history, profiling, lineage, and exports
 - Data profiling for column-level statistics
 - Basic anomaly detection plus profile-based drift monitoring with mean, standard deviation, PSI, and category distribution checks
 - Quality scoring and severity classification
 - CLI shortcuts for common commands
+- PostgreSQL and Amazon Redshift source extraction support
 - Optional FastAPI backend
 - Optional Apache Airflow DAG for daily orchestration
-- Docker Compose setup with PostgreSQL and Streamlit
+- Docker Compose setup with PostgreSQL, Streamlit, FastAPI, and a command runner
 - Pytest unit tests and GitHub Actions CI
 
 ## Tech Stack
@@ -29,10 +33,12 @@ The project is designed to be beginner-friendly while still showing professional
 |---|---|
 | Language | Python |
 | Data processing | pandas |
-| Database | PostgreSQL |
+| Database | PostgreSQL, Amazon Redshift |
 | Database access | SQLAlchemy, psycopg2 |
 | Configuration | YAML, python-dotenv |
 | Dashboard | Streamlit, Altair |
+| UI system | Environment-based branding, reusable Streamlit components |
+| Notifications | Mailtrap, Slack webhooks, Microsoft Teams webhooks |
 | API | FastAPI, Uvicorn |
 | Orchestration | Apache Airflow |
 | Exports | CSV, Excel, openpyxl |
@@ -42,10 +48,10 @@ The project is designed to be beginner-friendly while still showing professional
 ## Architecture
 
 ```text
-PostgreSQL source tables
+PostgreSQL or Redshift source tables
         |
         v
-data_sources/postgres_connector.py
+data_sources/source_factory.py
         |
         v
 config/rules.yaml
@@ -84,20 +90,34 @@ Automated_Data_Quality_Monotoring_System/
 |       `-- data_quality_monitoring_dag.py
 |-- api/
 |   `-- app.py
+|-- auth/
+|   `-- dashboard_auth.py
 |-- checks/
 |   |-- anomaly_checks.py
 |   |-- drift_detection.py
 |   `-- rule_engine.py
+|-- connectors/
+|   |-- base_connector.py
+|   |-- bigquery_connector.py
+|   |-- postgres_connector.py
+|   |-- redshift_connector.py
+|   `-- snowflake_connector.py
 |-- config/
+|   |-- alert_ownership.yaml
+|   |-- dashboard_users.example.yaml
 |   |-- lineage.yaml
 |   |-- rule_loader.py
+|   |-- rules.example.yaml
 |   |-- rules.yaml
 |   |-- sla_rules.yaml
 |   `-- settings.py
 |-- dashboard/
 |   `-- app.py
 |-- data_sources/
-|   `-- postgres_connector.py
+|   |-- connector_factory.py
+|   |-- postgres_connector.py
+|   |-- redshift_connector.py
+|   `-- source_factory.py
 |-- database/
 |   |-- init_db.py
 |   `-- seed_sample_data.py
@@ -108,6 +128,9 @@ Automated_Data_Quality_Monotoring_System/
 |   |-- runbook.md
 |   `-- system_architecture.md
 |-- notifications/
+|   |-- mailtrap_notifier.py
+|   |-- slack_notifier.py
+|   `-- teams_notifier.py
 |-- lineage/
 |   |-- lineage_loader.py
 |   `-- lineage_service.py
@@ -117,14 +140,28 @@ Automated_Data_Quality_Monotoring_System/
 |   `-- quality_score.py
 |-- sla/
 |   `-- sla_checker.py
+|-- scripts/
+|   |-- build_release.py
+|   `-- release_audit.py
 |-- tests/
+|-- ui/
+|   |-- assets/
+|   |-- charts.py
+|   |-- components.py
+|   `-- theme.py
 |-- cli.py
+|-- CHANGELOG.md
 |-- docker-compose.airflow.yml
 |-- docker-compose.yml
 |-- Dockerfile
 |-- main.py
+|-- QUICKSTART.md
 |-- README.md
+|-- SECURITY.md
+|-- VERSION
 |-- requirements-airflow.txt
+|-- requirements-bigquery.txt
+|-- requirements-snowflake.txt
 `-- requirements.txt
 ```
 
@@ -147,6 +184,7 @@ Create your local environment file:
 
 ```powershell
 Copy-Item .env.example .env
+Copy-Item config\rules.example.yaml config\rules.yaml
 ```
 
 Update `.env` with your PostgreSQL credentials. Required values are:
@@ -159,20 +197,89 @@ DB_PORT=5432
 DB_NAME=data_quality_db
 ```
 
+Source extraction defaults to PostgreSQL:
+
+```env
+SOURCE_DB_TYPE=postgres
+```
+
+For production-style separation, set `SOURCE_DB_*` for the source extraction database and `MONITOR_DB_*` for monitoring results. If those variables are missing, the project falls back to legacy `DB_*` values.
+
+Dashboard authentication is controlled by these values:
+
+```env
+DASHBOARD_AUTH_ENABLED=true
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=change_me
+```
+
+Set `DASHBOARD_AUTH_ENABLED=false` to run the dashboard without a login during local development. Change `DASHBOARD_PASSWORD` before sharing the dashboard.
+
+Dashboard branding and theme are controlled by these values:
+
+```env
+APP_NAME=Automated Data Quality Monitoring System
+COMPANY_NAME=Your Company
+DASHBOARD_TITLE=Data Quality Command Center
+DASHBOARD_ICON=📊
+ENVIRONMENT_NAME=Development
+DASHBOARD_THEME=light
+DEMO_BRANDING_MODE=false
+BRAND_PRIMARY_COLOR=#1E3A8A
+BRAND_SECONDARY_COLOR=#0F172A
+BRAND_ACCENT_COLOR=#2563EB
+BRAND_SUCCESS_COLOR=#16A34A
+BRAND_WARNING_COLOR=#F59E0B
+BRAND_ERROR_COLOR=#DC2626
+BRAND_LOGO_PATH=ui/assets/logo.png
+BRAND_FAVICON_PATH=ui/assets/favicon.png
+```
+
 Do not commit `.env`; it is intentionally listed in `.gitignore`.
+
+## Source Connectors
+
+The monitoring results are still stored in PostgreSQL, but source data can be loaded from PostgreSQL or Amazon Redshift.
+`SOURCE_DB_TYPE` is the preferred setting; `DATA_SOURCE_TYPE` is also accepted as a compatibility alias.
+
+Use PostgreSQL source tables:
+
+```env
+SOURCE_DB_TYPE=postgres
+```
+
+Use Amazon Redshift source tables:
+
+```env
+SOURCE_DB_TYPE=redshift
+REDSHIFT_HOST=your-redshift-cluster.amazonaws.com
+REDSHIFT_PORT=5439
+REDSHIFT_DB=analytics
+REDSHIFT_USER=redshift_user
+REDSHIFT_PASSWORD=redshift_password
+REDSHIFT_SCHEMA=public
+```
+
+Supported source type values are `postgres`, `redshift`, `snowflake`, and `bigquery`. Redshift is implemented with SQLAlchemy. Snowflake and BigQuery connector scaffolds are included under `connectors/` and `data_sources/`; install optional dependencies only when you are ready to complete those connections:
+
+```powershell
+pip install -r requirements-snowflake.txt
+pip install -r requirements-bigquery.txt
+```
 
 ## Database Initialization
 
-Create the monitoring tables:
+Validate configuration and create the monitoring tables:
 
 ```powershell
-python database/init_db.py
+python cli.py validate-config
+python cli.py init-db
 ```
 
 Create sample source tables and intentionally imperfect data:
 
 ```powershell
-python database/seed_sample_data.py
+python cli.py seed-demo
 ```
 
 The sample script creates:
@@ -188,7 +295,7 @@ It includes examples such as null email, invalid email format, duplicate email, 
 Run data quality checks:
 
 ```powershell
-python main.py
+python cli.py run-checks
 ```
 
 Run the dashboard:
@@ -200,42 +307,51 @@ python -m streamlit run dashboard/app.py
 Run unit tests:
 
 ```powershell
-pytest tests/
+pytest -q
 ```
 
 ## CLI Usage
 
 ```powershell
+python cli.py validate-config
 python cli.py init-db
+python cli.py seed-demo
 python cli.py run-checks
-python cli.py run-dashboard
+python cli.py dashboard
+python cli.py api
+python cli.py version
+python cli.py demo
+python cli.py build-release
+python cli.py release-audit
 python cli.py show-latest-run
 ```
 
-`run-dashboard` prints the Streamlit command so users do not accidentally run the dashboard with plain Python.
+`dashboard` and `api` print the recommended commands by default. Add `--run` to launch them from the CLI.
 
 ## Docker Usage
 
-Start PostgreSQL and the Streamlit dashboard:
+Create Docker environment values:
 
 ```powershell
-docker compose up --build
+Copy-Item .env.docker.example .env.docker
 ```
 
-Open the dashboard at:
-
-```text
-http://localhost:8501
-```
-
-Useful Docker commands:
+Start PostgreSQL, initialize the monitoring database, seed demo source data, and run checks:
 
 ```powershell
-docker compose exec dashboard python database/init_db.py
-docker compose exec dashboard python database/seed_sample_data.py
-docker compose exec dashboard python main.py
-docker compose down
+docker compose up -d postgres
+docker compose run --rm runner python cli.py init-db
+docker compose run --rm runner python cli.py seed-demo
+docker compose run --rm runner python cli.py run-checks
 ```
+
+Start the dashboard and API:
+
+```powershell
+docker compose up -d dashboard api
+```
+
+Open Streamlit at `http://localhost:8501` and FastAPI at `http://localhost:8000`. Docker exposes PostgreSQL on host port `5433`.
 
 ## Optional Apache Airflow Orchestration
 
@@ -433,6 +549,68 @@ The dashboard includes a `Data Lineage` page showing:
 - a lightweight lineage matrix
 - failed referential integrity checks mapped to lineage relationships
 
+## Alert Ownership
+
+Alert ownership is configured in `config/alert_ownership.yaml`.
+
+```yaml
+orders:
+  owner_team: Operations Analytics
+  owner_email: ops-analytics@example.com
+
+severity_escalation:
+  CRITICAL:
+    owner_team: Data Platform
+    owner_email: data-platform@example.com
+```
+
+Ownership is assigned when alerts are created. Dataset, check-type, and default ownership rules are supported, and severity escalation takes precedence when configured. The dashboard `Alerts` page shows owner team, owner email, assignee, resolution notes, and resolved timestamp.
+
+## Slack And Teams Notifications
+
+Slack notifications use an incoming webhook:
+
+```env
+SLACK_NOTIFICATIONS_ENABLED=true
+SLACK_WEBHOOK_URL=your_slack_webhook_url
+```
+
+Microsoft Teams notifications also use an incoming webhook:
+
+```env
+TEAMS_NOTIFICATIONS_ENABLED=true
+TEAMS_WEBHOOK_URL=your_teams_webhook_url
+```
+
+Both integrations are optional. If they are disabled, missing a webhook URL, or receive a network error, the data quality run continues and logs the notification issue.
+
+## Dashboard Authentication
+
+The Streamlit dashboard calls `auth/dashboard_auth.py` before loading monitoring data.
+
+When `DASHBOARD_AUTH_ENABLED=true`, users must sign in with `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD`. Login state is stored in `st.session_state`, and a `Logout` button appears in the sidebar after successful login.
+
+For local development, set:
+
+```env
+DASHBOARD_AUTH_ENABLED=false
+```
+
+## Dashboard Branding And Theme
+
+The enterprise dashboard UI is configured through `.env`, so product naming, colors, assets, and theme can change without editing Python code.
+
+Common customizations:
+
+- Change `APP_NAME`, `COMPANY_NAME`, and `DASHBOARD_TITLE` for product naming.
+- Set `DASHBOARD_ICON=📊` or another single emoji/icon for browser metadata; the in-app square mark uses your logo or a clean `DQ` fallback.
+- Set `DASHBOARD_THEME=light` or `DASHBOARD_THEME=dark`.
+- Replace `ui/assets/logo.png` with your own transparent PNG logo.
+- Set `BRAND_LOGO_PATH` and `BRAND_FAVICON_PATH` if your asset names differ.
+- Use `DEMO_BRANDING_MODE=true` for portfolio screenshots and demos.
+
+Recommended logo size: 256 x 256 px PNG with transparent background.
+
 ## Dashboard
 
 Dashboard sections:
@@ -444,21 +622,25 @@ Dashboard sections:
 - Data Profiling
 - Data Lineage
 - SLA Tracking
+- Setup Wizard
 - Run History
 
 Dashboard capabilities:
 
 - Filter by run ID, dataset, status, severity, and alert severity
+- Use grouped enterprise sidebar navigation
+- Switch light/dark theme from `.env`
+- Rebrand app name, company name, colors, logo, and favicon from `.env`
 - View quality score trends
 - View failed checks by dataset and check type
 - View issue severity distribution
 - Track dataset SLA compliance over time
+- Assign alert owners, assignees, and resolution notes
+- Require login and allow logout when dashboard auth is enabled
 - Resolve alerts
 - Export filtered reports to CSV and Excel
 
 ## Dashboard Screenshots
-
-## 📸 Screenshots
 
 ### Overview
 ![Overview](docs/screenshots/overview.png)
@@ -485,9 +667,28 @@ Dashboard capabilities:
 
 - [Data Governance Framework](docs/data_governance_framework.md)
 - [Data Quality Rules](docs/data_quality_rules.md)
+- [Installation](docs/installation.md)
+- [Configuration](docs/configuration.md)
+- [Rules Guide](docs/rules_guide.md)
+- [Dashboard Guide](docs/dashboard_guide.md)
+- [Notifications](docs/notifications.md)
+- [Docker Setup](docs/docker_setup.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Release Guide](docs/release_guide.md)
 - [Root Cause Analysis Guide](docs/root_cause_analysis_guide.md)
 - [System Architecture](docs/system_architecture.md)
 - [Runbook](docs/runbook.md)
+
+## Release Packaging
+
+Run the release audit and build a safe downloadable ZIP:
+
+```powershell
+python cli.py release-audit
+python cli.py build-release
+```
+
+Release archives are written to `release/` and exclude `.env`, `.env.docker`, logs, bytecode, virtual environments, `.git`, `.pytest_cache`, and old zip files.
 
 ## GitHub Actions CI
 
@@ -501,10 +702,8 @@ The tests do not require PostgreSQL.
 
 ## Future Improvements
 
-- Add dashboard authentication
-- Add Slack or Microsoft Teams alert notifications
-- Add role-based alert ownership
-- Add cloud warehouse connectors
+- Add dashboard user roles and permissions
+- Complete Snowflake and BigQuery production connectors
 
 ## CV Bullet Points
 

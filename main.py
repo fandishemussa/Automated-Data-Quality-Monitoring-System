@@ -3,7 +3,11 @@ from checks.anomaly_checks import run_statistical_checks
 from checks.drift_detection import run_advanced_drift_checks_for_datasets
 from checks.rule_engine import run_rules_for_dataset
 from config.rule_loader import load_rules
-from data_sources.postgres_connector import get_table_names, load_table
+from config.settings import get_bool_env
+from data_sources.source_factory import get_source_functions, get_source_type
+from notifications.mailtrap_notifier import send_mailtrap_alert_email
+from notifications.slack_notifier import send_slack_alert
+from notifications.teams_notifier import send_teams_alert
 from reports.data_profiler import profile_and_save_datasets
 from reports.generate_report import (
     append_results_to_existing_run,
@@ -12,9 +16,49 @@ from reports.generate_report import (
 )
 from reports.quality_score import calculate_quality_score
 from sla.sla_checker import evaluate_sla_for_run, save_sla_results
+from utils.config_validator import has_failures, print_validation_report, validate_config
 from utils.logger import get_logger
-from notifications.mailtrap_notifier import send_mailtrap_alert_email
 logger = get_logger(__name__)
+
+CRITICAL_PREFLIGHT_CHECKS = {
+    "rules.yaml exists",
+    "rules.yaml valid",
+    "source database connection",
+    "monitoring database connection",
+    "monitoring tables",
+    "source tables referenced in rules",
+}
+
+
+def run_preflight_checks() -> bool:
+    """Validate required runtime configuration before starting a run."""
+
+    if get_bool_env("SKIP_PREFLIGHT_CHECK", False):
+        logger.warning("Skipping preflight checks because SKIP_PREFLIGHT_CHECK=true.")
+        return True
+
+    logger.info("Running preflight configuration checks.")
+    validation_results = validate_config()
+
+    if has_failures(validation_results, CRITICAL_PREFLIGHT_CHECKS):
+        print_validation_report(validation_results)
+        logger.error("Preflight validation failed. Monitoring run was not started.")
+        print("")
+        print("Preflight failed. Useful commands:")
+        print("python cli.py validate-config")
+        print("python cli.py init-db")
+        return False
+
+    warnings = [
+        result for result in validation_results
+        if result["status"] == "WARNING"
+    ]
+    if warnings:
+        logger.warning("Preflight completed with %s warning(s).", len(warnings))
+    else:
+        logger.info("Preflight validation passed.")
+
+    return True
 
 
 def main():
@@ -22,12 +66,24 @@ def main():
 
     logger.info("Starting automated data quality monitoring run.")
 
+    if not run_preflight_checks():
+        return
+
     rules = load_rules("config/rules.yaml")
     logger.info("Loaded data quality rules from config/rules.yaml.")
     global_rules = rules.get("global_rules", {})
 
+    source = get_source_functions()
+    load_table = source.load_table
+    get_table_names = source.get_table_names
+    source_type = get_source_type()
+
     available_tables = get_table_names()
-    logger.info("Found %s table(s) in PostgreSQL.", len(available_tables))
+    logger.info(
+        "Found %s table(s) in configured source database: %s.",
+        len(available_tables),
+        source_type,
+    )
 
     ignored_sections = {
         "global_rules",
@@ -132,12 +188,22 @@ def main():
     except Exception:
         logger.exception("SLA evaluation failed for run %s.", run_id)
 
-    created_alerts = create_alerts_for_run(run_id, summary)
+    created_alerts = create_alerts_for_run(run_id, summary, all_results)
 
     send_mailtrap_alert_email(
         run_id=run_id,
         summary=summary,
         alerts=created_alerts
+    )
+    send_slack_alert(
+        run_id=run_id,
+        summary=summary,
+        alerts=created_alerts,
+    )
+    send_teams_alert(
+        run_id=run_id,
+        summary=summary,
+        alerts=created_alerts,
     )
     logger.info("Data quality monitoring run completed. Run ID: %s", run_id)
 

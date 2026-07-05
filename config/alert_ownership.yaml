@@ -1,0 +1,35 @@
+# Alert ownership rules used by alerts/alert_manager.py.
+# Severity escalation is evaluated first, then dataset ownership,
+# then check-type ownership, then default ownership.
+
+default_owner:
+  owner_team: Data Governance
+  owner_email: data-governance@example.com
+  slack_channel: "#data-quality"
+
+customers:
+  owner_team: Data Governance
+  owner_email: data-governance@example.com
+  slack_channel: "#data-quality"
+
+orders:
+  owner_team: Operations Analytics
+  owner_email: ops-analytics@example.com
+
+products:
+  owner_team: Product Operations
+  owner_email: product-ops@example.com
+
+severity_escalation:
+  CRITICAL:
+    owner_team: Data Platform
+    owner_email: data-platform@example.com
+    slack_channel: "#data-platform"
+
+check_type_ownership:
+  referential_integrity_check:
+    owner_team: Data Platform
+    owner_email: data-platform@example.com
+  data_drift_check:
+    owner_team: Analytics Engineering
+    owner_email: analytics-engineering@example.com

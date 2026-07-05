@@ -4,7 +4,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from checks.rule_engine import build_result, make_issue_details, make_message_detail
-from data_sources.postgres_connector import create_postgres_engine
+from data_sources.postgres_connector import create_monitor_engine
 from utils.logger import get_logger
 
 
@@ -58,7 +58,7 @@ def _load_previous_profile_means(dataset_name):
     """)
 
     try:
-        engine = create_postgres_engine()
+        engine = create_monitor_engine()
         profile_df = pd.read_sql(
             query,
             engine,

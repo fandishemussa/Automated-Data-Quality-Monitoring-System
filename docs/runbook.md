@@ -21,7 +21,7 @@ Create `.env` from `.env.example` and update the PostgreSQL values.
 ## Initialize The Database
 
 ```powershell
-python database/init_db.py
+python cli.py init-db
 ```
 
 This creates the monitoring tables used by the reports, dashboard, and API.
@@ -29,18 +29,12 @@ This creates the monitoring tables used by the reports, dashboard, and API.
 ## Seed Sample Data
 
 ```powershell
-python database/seed_sample_data.py
+python cli.py seed-demo
 ```
 
 This resets and populates `customers`, `orders`, and `products` with a mix of valid and intentionally invalid rows.
 
 ## Run Checks
-
-```powershell
-python main.py
-```
-
-or:
 
 ```powershell
 python cli.py run-checks
@@ -65,21 +59,23 @@ Open `http://127.0.0.1:8000/docs`.
 ## Docker
 
 ```powershell
-docker compose up --build
+Copy-Item .env.docker.example .env.docker
+docker compose up -d postgres
 ```
 
-Then initialize and seed data inside the dashboard container if needed:
+Then initialize, seed, and run checks with the runner:
 
 ```powershell
-docker compose exec dashboard python database/init_db.py
-docker compose exec dashboard python database/seed_sample_data.py
-docker compose exec dashboard python main.py
+docker compose run --rm runner python cli.py init-db
+docker compose run --rm runner python cli.py seed-demo
+docker compose run --rm runner python cli.py run-checks
+docker compose up -d dashboard api
 ```
 
 ## Tests
 
 ```powershell
-pytest tests/
+pytest -q
 ```
 
 Tests use small pandas DataFrames and do not require PostgreSQL.
@@ -114,7 +110,7 @@ Fix:
 Fix:
 
 ```powershell
-python database/init_db.py
+python cli.py init-db
 ```
 
 ### No Source Tables Found
@@ -122,7 +118,7 @@ python database/init_db.py
 Fix:
 
 ```powershell
-python database/seed_sample_data.py
+python cli.py seed-demo
 ```
 
 or create your own `customers`, `orders`, and `products` tables that match `config/rules.yaml`.
@@ -149,8 +145,9 @@ Fix:
 Before a demo:
 
 - `.env` exists and uses safe local credentials.
-- `python database/init_db.py` succeeds.
-- `python database/seed_sample_data.py` succeeds.
-- `python main.py` creates a run.
+- `python cli.py validate-config` succeeds.
+- `python cli.py init-db` succeeds.
+- `python cli.py seed-demo` succeeds.
+- `python cli.py run-checks` creates a run.
 - `python -m streamlit run dashboard/app.py` opens.
-- `pytest tests/` passes.
+- `pytest -q` passes.

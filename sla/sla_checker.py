@@ -147,9 +147,9 @@ def save_sla_results(
         return 0
 
     if engine is None:
-        from data_sources.postgres_connector import create_postgres_engine
+        from data_sources.postgres_connector import create_monitor_engine
 
-        engine = create_postgres_engine()
+        engine = create_monitor_engine()
 
     ensure_sla_table_exists(engine)
 

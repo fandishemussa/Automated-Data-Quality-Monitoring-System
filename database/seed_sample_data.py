@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from data_sources.postgres_connector import create_postgres_engine
+from data_sources.postgres_connector import create_source_engine
 from utils.logger import get_logger
 
 
@@ -37,7 +37,7 @@ RESET_TABLE_SQL = [
 
 CREATE_TABLE_SQL = [
     """
-    CREATE TABLE customers (
+    CREATE TABLE IF NOT EXISTS customers (
         customer_id INT PRIMARY KEY,
         name VARCHAR(100),
         email VARCHAR(100),
@@ -45,7 +45,7 @@ CREATE_TABLE_SQL = [
     )
     """,
     """
-    CREATE TABLE orders (
+    CREATE TABLE IF NOT EXISTS orders (
         order_id INT PRIMARY KEY,
         customer_id INT,
         order_date TIMESTAMP,
@@ -54,7 +54,7 @@ CREATE_TABLE_SQL = [
     )
     """,
     """
-    CREATE TABLE products (
+    CREATE TABLE IF NOT EXISTS products (
         product_id INT PRIMARY KEY,
         product_name VARCHAR(200),
         price NUMERIC(12, 2),
@@ -162,14 +162,21 @@ def _sample_rows() -> dict[str, list[dict[str, Any]]]:
                 "stock": -2,
                 "updated_at": now - timedelta(days=10),
             },
+            {
+                "product_id": 205,
+                "product_name": "AB",
+                "price": 10.00,
+                "stock": 7,
+                "updated_at": now,
+            },
         ],
     }
 
 
-def reset_sample_tables() -> None:
+def reset_sample_tables(engine=None) -> None:
     """Drop and recreate the sample source tables."""
 
-    engine = create_postgres_engine()
+    engine = engine or create_source_engine()
 
     with engine.begin() as connection:
         for statement in RESET_TABLE_SQL:
@@ -181,10 +188,25 @@ def reset_sample_tables() -> None:
     logger.info("Sample source tables reset successfully.")
 
 
-def seed_sample_data() -> None:
+def _prepare_sample_tables(engine, reset: bool) -> None:
+    """Prepare demo tables for a deterministic sample-data load."""
+
+    if reset:
+        reset_sample_tables(engine)
+        return
+
+    with engine.begin() as connection:
+        for statement in CREATE_TABLE_SQL:
+            connection.execute(text(statement))
+        for table_name in ["orders", "products", "customers"]:
+            connection.execute(text(f"DELETE FROM {table_name}"))
+
+
+def seed_sample_data(reset: bool = True) -> None:
     """Insert sample rows into customers, orders, and products."""
 
-    engine = create_postgres_engine()
+    engine = create_source_engine()
+    _prepare_sample_tables(engine, reset)
     rows = _sample_rows()
 
     insert_statements = {
@@ -217,8 +239,7 @@ def seed_sample_data() -> None:
 def main() -> None:
     """Reset and seed sample source data."""
 
-    reset_sample_tables()
-    seed_sample_data()
+    seed_sample_data(reset=True)
     logger.info("Sample data seeding completed.")
 
 

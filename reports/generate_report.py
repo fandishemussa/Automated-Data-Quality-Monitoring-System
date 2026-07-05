@@ -2,7 +2,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from data_sources.postgres_connector import create_postgres_engine
+from data_sources.postgres_connector import create_monitor_engine
 from utils.logger import get_logger
 
 
@@ -159,7 +159,7 @@ def update_run_summary(run_id: int, results: list[dict[str, Any]]) -> dict[str, 
         WHERE run_id = :run_id
     """)
     params = {"run_id": run_id, **summary}
-    engine = create_postgres_engine()
+    engine = create_monitor_engine()
 
     with engine.begin() as connection:
         connection.execute(update_query, params)
@@ -178,7 +178,7 @@ def append_results_to_existing_run(
         logger.info("No additional data quality results to append for run %s.", run_id)
         return 0
 
-    engine = create_postgres_engine()
+    engine = create_monitor_engine()
 
     with engine.begin() as connection:
         inserted_count = _insert_result_rows(connection, run_id, results)
@@ -192,7 +192,7 @@ def save_results_to_postgres(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     logger.info("Saving %s data quality result(s) to PostgreSQL.", len(results))
 
-    engine = create_postgres_engine()
+    engine = create_monitor_engine()
 
     summary = calculate_run_summary(results)
     logger.info("Calculated run summary: %s", summary)

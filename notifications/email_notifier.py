@@ -56,6 +56,9 @@ def build_alert_email_body(
         f"""
 Alert Type: {alert.get("alert_type")}
 Severity: {alert.get("severity")}
+Owner Team: {alert.get("owner_team") or "Unassigned"}
+Owner Email: {alert.get("owner_email") or "N/A"}
+Assigned To: {alert.get("assigned_to") or "Unassigned"}
 Message: {alert.get("message")}
 """
         for alert in alerts
@@ -110,6 +113,9 @@ def build_alert_email_html(
         <tr>
             <td>{alert.get("alert_type")}</td>
             <td>{alert.get("severity")}</td>
+            <td>{alert.get("owner_team") or "Unassigned"}</td>
+            <td>{alert.get("owner_email") or "N/A"}</td>
+            <td>{alert.get("assigned_to") or "Unassigned"}</td>
             <td>{alert.get("message")}</td>
         </tr>
         """
@@ -162,6 +168,9 @@ def build_alert_email_html(
                 <tr>
                     <th>Alert Type</th>
                     <th>Severity</th>
+                    <th>Owner Team</th>
+                    <th>Owner Email</th>
+                    <th>Assigned To</th>
                     <th>Message</th>
                 </tr>
                 {alert_rows}

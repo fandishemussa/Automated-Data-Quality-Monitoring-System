@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from data_sources.postgres_connector import create_postgres_engine
+from data_sources.postgres_connector import create_monitor_engine
 from utils.logger import get_logger
 
 
@@ -72,9 +72,49 @@ CREATE_TABLE_STATEMENTS = [
         alert_type VARCHAR(100),
         severity VARCHAR(20),
         message TEXT,
+        owner_team VARCHAR(100),
+        owner_email VARCHAR(255),
+        assigned_to VARCHAR(255),
+        resolution_notes TEXT,
+        resolved_by VARCHAR(255),
         is_resolved BOOLEAN DEFAULT FALSE,
+        resolved_at TIMESTAMP,
+        sla_due_at TIMESTAMP,
+        escalation_status VARCHAR(50),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
+    """,
+    """
+    ALTER TABLE IF EXISTS data_quality_alerts
+    ADD COLUMN IF NOT EXISTS owner_team VARCHAR(100)
+    """,
+    """
+    ALTER TABLE IF EXISTS data_quality_alerts
+    ADD COLUMN IF NOT EXISTS owner_email VARCHAR(255)
+    """,
+    """
+    ALTER TABLE IF EXISTS data_quality_alerts
+    ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(255)
+    """,
+    """
+    ALTER TABLE IF EXISTS data_quality_alerts
+    ADD COLUMN IF NOT EXISTS resolution_notes TEXT
+    """,
+    """
+    ALTER TABLE IF EXISTS data_quality_alerts
+    ADD COLUMN IF NOT EXISTS resolved_by VARCHAR(255)
+    """,
+    """
+    ALTER TABLE IF EXISTS data_quality_alerts
+    ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP
+    """,
+    """
+    ALTER TABLE IF EXISTS data_quality_alerts
+    ADD COLUMN IF NOT EXISTS sla_due_at TIMESTAMP
+    """,
+    """
+    ALTER TABLE IF EXISTS data_quality_alerts
+    ADD COLUMN IF NOT EXISTS escalation_status VARCHAR(50)
     """,
     """
     CREATE TABLE IF NOT EXISTS data_quality_sla_results (
@@ -132,6 +172,17 @@ CREATE_TABLE_STATEMENTS = [
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id SERIAL PRIMARY KEY,
+        event_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        event_type VARCHAR(100),
+        module_name VARCHAR(100),
+        actor VARCHAR(255),
+        message TEXT,
+        metadata TEXT
+    )
+    """,
 ]
 
 
@@ -139,7 +190,7 @@ def initialize_database():
     """Create all monitoring tables if they do not already exist."""
 
     logger.info("Initializing PostgreSQL monitoring database tables.")
-    engine = create_postgres_engine()
+    engine = create_monitor_engine()
 
     with engine.begin() as connection:
         for statement in CREATE_TABLE_STATEMENTS:
