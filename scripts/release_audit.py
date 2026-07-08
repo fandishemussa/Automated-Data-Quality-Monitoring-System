@@ -35,6 +35,7 @@ REQUIRED_FILES = [
 ]
 
 REQUIRED_DOCS = [
+    "docs/api_guide.md",
     "docs/installation.md",
     "docs/configuration.md",
     "docs/rules_guide.md",

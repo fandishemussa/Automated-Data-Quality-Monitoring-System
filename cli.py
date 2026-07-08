@@ -42,6 +42,16 @@ def run_checks_command(_args: argparse.Namespace) -> int:
     return 0
 
 
+def escalate_alerts_command(_args: argparse.Namespace) -> int:
+    """Escalate unresolved alerts that are past their SLA window."""
+
+    from alerts.escalation import run_alert_escalation
+
+    escalated_alerts = run_alert_escalation()
+    print(f"Escalated {len(escalated_alerts)} alert(s).")
+    return 0
+
+
 def validate_config_command(_args: argparse.Namespace) -> int:
     """Validate environment, database, and rules configuration."""
 
@@ -204,6 +214,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run configured data quality checks.",
     )
     run_checks_parser.set_defaults(func=run_checks_command)
+
+    escalate_alerts_parser = subparsers.add_parser(
+        "escalate-alerts",
+        help="Escalate unresolved CRITICAL/HIGH alerts that are past SLA.",
+    )
+    escalate_alerts_parser.set_defaults(func=escalate_alerts_command)
 
     dashboard_parser = subparsers.add_parser(
         "dashboard",

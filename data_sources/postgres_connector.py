@@ -78,6 +78,33 @@ def create_source_engine() -> Engine:
     return _create_engine_from_settings(get_source_db_config(), "source")
 
 
+class PostgresConnector:
+    """Canonical PostgreSQL source connector."""
+
+    def load_table(self, table_name: str) -> pd.DataFrame:
+        """Load a PostgreSQL source table."""
+
+        return load_table(table_name)
+
+    def get_table_names(self) -> list[str]:
+        """Return PostgreSQL source table names."""
+
+        return get_table_names()
+
+    def get_table_description(self, table_name: str) -> pd.DataFrame:
+        """Return PostgreSQL table metadata."""
+
+        return get_table_description(table_name)
+
+    def test_connection(self) -> bool:
+        """Return whether the PostgreSQL source can be reached."""
+
+        engine = create_source_engine()
+        with engine.begin() as connection:
+            connection.execute(text("SELECT 1"))
+        return True
+
+
 def create_monitor_engine() -> Engine:
     """Create the SQLAlchemy engine used for monitoring tables."""
 
@@ -124,6 +151,7 @@ def get_table_columns(table_name: str) -> list[str]:
         FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name = :table_name
+        ORDER BY ordinal_position
     """)
     df = pd.read_sql(query, engine, params={"table_name": table_name})
     logger.debug("Loaded %s column(s) for table %s.", len(df), table_name)
@@ -230,10 +258,11 @@ def get_table_description(table_name: str) -> pd.DataFrame:
 
     engine = create_source_engine()
     query = text("""
-        SELECT column_name, data_type, is_nullable
+        SELECT column_name, data_type, is_nullable, ordinal_position
         FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name = :table_name
+        ORDER BY ordinal_position
     """)
     df = pd.read_sql(query, engine, params={"table_name": table_name})
     logger.debug("Loaded table description for %s.", table_name)

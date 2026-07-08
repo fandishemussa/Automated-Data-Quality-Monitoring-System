@@ -155,6 +155,16 @@ global_rules:
       - chi_square
       - kolmogorov_smirnov
 
+  schema_drift_detection:
+    enabled: true
+    severity: HIGH
+
+  volume_anomaly_detection:
+    enabled: true
+    baseline_runs: 5
+    change_threshold_percent: 40
+    severity: HIGH
+
   anomaly_detection:
     enabled: true
     z_score_threshold: 3

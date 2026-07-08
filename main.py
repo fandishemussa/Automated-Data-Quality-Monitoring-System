@@ -2,6 +2,8 @@ from alerts.alert_manager import create_alerts_for_run
 from checks.anomaly_checks import run_statistical_checks
 from checks.drift_detection import run_advanced_drift_checks_for_datasets
 from checks.rule_engine import run_rules_for_dataset
+from checks.schema_drift import run_schema_drift_check
+from checks.volume_anomaly import run_volume_anomaly_check
 from config.rule_loader import load_rules
 from config.settings import get_bool_env
 from data_sources.source_factory import get_source_functions, get_source_type
@@ -150,6 +152,53 @@ def main():
 
     run_id = save_result["run_id"]
     summary = save_result["summary"]
+
+    schema_drift_config = global_rules.get("schema_drift_detection", {})
+    schema_drift_results = []
+
+    if schema_drift_config.get("enabled", False):
+        for dataset_name in loaded_datasets:
+            schema_drift_results.append(
+                run_schema_drift_check(
+                    run_id=run_id,
+                    dataset_name=dataset_name,
+                    drift_config=schema_drift_config,
+                )
+            )
+
+    if schema_drift_results:
+        append_results_to_existing_run(run_id, schema_drift_results)
+        all_results.extend(schema_drift_results)
+        summary = update_run_summary(run_id, all_results)
+        logger.info(
+            "Saved %s schema drift result(s) for run %s.",
+            len(schema_drift_results),
+            run_id,
+        )
+
+    volume_config = global_rules.get("volume_anomaly_detection", {})
+    volume_results = []
+
+    if volume_config.get("enabled", False):
+        for dataset_name, df in loaded_datasets.items():
+            volume_results.append(
+                run_volume_anomaly_check(
+                    run_id=run_id,
+                    dataset_name=dataset_name,
+                    current_df=df,
+                    volume_config=volume_config,
+                )
+            )
+
+    if volume_results:
+        append_results_to_existing_run(run_id, volume_results)
+        all_results.extend(volume_results)
+        summary = update_run_summary(run_id, all_results)
+        logger.info(
+            "Saved %s row volume anomaly result(s) for run %s.",
+            len(volume_results),
+            run_id,
+        )
 
     try:
         saved_profile_count = profile_and_save_datasets(run_id, loaded_datasets)

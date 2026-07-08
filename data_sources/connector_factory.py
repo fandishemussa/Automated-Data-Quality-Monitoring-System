@@ -2,6 +2,7 @@
 
 from data_sources.source_factory import (
     SourceFunctions,
+    get_source_connector,
     get_source_functions,
     get_source_module_name,
     get_source_type,
@@ -17,6 +18,7 @@ def get_connector(source_type: str | None = None) -> SourceFunctions:
 __all__ = [
     "SourceFunctions",
     "get_connector",
+    "get_source_connector",
     "get_source_functions",
     "get_source_module_name",
     "get_source_type",

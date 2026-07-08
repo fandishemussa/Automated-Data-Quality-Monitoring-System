@@ -7,24 +7,31 @@ The project is designed to be beginner-friendly while still showing professional
 ## Key Features
 
 - Config-driven quality rules in `config/rules.yaml`
+- Rules Catalog dashboard page for inspecting active YAML rules
 - PostgreSQL integration with SQLAlchemy
 - Automated checks for completeness, uniqueness, validity, freshness, consistency, and range accuracy
 - Failed-row issue details for root cause analysis
 - Data lineage metadata for source-table relationships
 - Historical SLA tracking for dataset quality targets
 - Role-based alert ownership with assignment and resolution notes
-- Alert generation, Slack/Teams/email notifications, and alert resolution from the dashboard
+- Alert generation, Slack/Teams/email notifications, alert resolution, and escalation workflow
 - Dashboard authentication with environment-based credentials
 - Enterprise UI theme, branded header/sidebar, light/dark mode, and customizable assets
-- Streamlit dashboard with filters, charts, run history, profiling, lineage, and exports
+- Streamlit dashboard with filters, charts, run history, profiling, lineage, run actions, and exports
+- Executive Excel and PDF reports for managers and governance teams
 - Data profiling for column-level statistics
+- Enterprise data remediation workflow with preview-first cleaning jobs, issue statuses, audit logs, and before/after change history
 - Basic anomaly detection plus profile-based drift monitoring with mean, standard deviation, PSI, and category distribution checks
+- Enterprise schema drift detection for added, removed, reordered, and changed columns
+- Row volume anomaly detection for sudden ingestion drops and spikes
 - Quality scoring and severity classification
 - CLI shortcuts for common commands
 - PostgreSQL and Amazon Redshift source extraction support
-- Optional FastAPI backend
+- Optional FastAPI backend with versioned `/api/v1` routes
+- Next.js SaaS frontend foundation with TypeScript, Tailwind CSS, shadcn/ui-style components, TanStack Table, Recharts, and Lucide icons
+- Data Remediation Center for safe issue triage, cleaning previews, approval workflow, change history, and rollback-ready audit trails
 - Optional Apache Airflow DAG for daily orchestration
-- Docker Compose setup with PostgreSQL, Streamlit, FastAPI, and a command runner
+- Docker Compose setup with PostgreSQL, Streamlit, FastAPI backend, Next.js frontend, and a command runner
 - Pytest unit tests and GitHub Actions CI
 
 ## Tech Stack
@@ -37,11 +44,12 @@ The project is designed to be beginner-friendly while still showing professional
 | Database access | SQLAlchemy, psycopg2 |
 | Configuration | YAML, python-dotenv |
 | Dashboard | Streamlit, Altair |
+| SaaS frontend | Next.js, TypeScript, Tailwind CSS, shadcn/ui-style components, TanStack Table, Recharts, Lucide icons |
 | UI system | Environment-based branding, reusable Streamlit components |
 | Notifications | Mailtrap, Slack webhooks, Microsoft Teams webhooks |
 | API | FastAPI, Uvicorn |
 | Orchestration | Apache Airflow |
-| Exports | CSV, Excel, openpyxl |
+| Exports | CSV, Excel, PDF, openpyxl, reportlab |
 | Testing | pytest |
 | DevOps | Docker, Docker Compose, GitHub Actions |
 
@@ -75,6 +83,9 @@ PostgreSQL monitoring tables
         |                              |
         v                              v
 dashboard/app.py                 api/app.py
+                                        |
+                                        v
+                                frontend/
 ```
 
 ## Folder Structure
@@ -127,6 +138,13 @@ Automated_Data_Quality_Monotoring_System/
 |   |-- root_cause_analysis_guide.md
 |   |-- runbook.md
 |   `-- system_architecture.md
+|-- frontend/
+|   |-- app/
+|   |-- components/
+|   |-- lib/
+|   |-- Dockerfile
+|   |-- package.json
+|   `-- .env.local.example
 |-- notifications/
 |   |-- mailtrap_notifier.py
 |   |-- slack_notifier.py
@@ -215,6 +233,18 @@ DASHBOARD_PASSWORD=change_me
 
 Set `DASHBOARD_AUTH_ENABLED=false` to run the dashboard without a login during local development. Change `DASHBOARD_PASSWORD` before sharing the dashboard.
 
+FastAPI supports API-token authentication for automation and signed user sessions for the Next.js frontend:
+
+```env
+API_AUTH_ENABLED=true
+API_TOKEN=change_me
+API_TOKEN_HEADER=X-API-Key
+FRONTEND_URL=http://localhost:3000
+USER_SESSION_TTL_SECONDS=43200
+```
+
+`FRONTEND_URL` is used by FastAPI CORS so the local Next.js app can call the backend. The first Next.js dashboard admin user is bootstrapped from `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD` when the users table is empty.
+
 Dashboard branding and theme are controlled by these values:
 
 ```env
@@ -260,11 +290,12 @@ REDSHIFT_PASSWORD=redshift_password
 REDSHIFT_SCHEMA=public
 ```
 
-Supported source type values are `postgres`, `redshift`, `snowflake`, and `bigquery`. Redshift is implemented with SQLAlchemy. Snowflake and BigQuery connector scaffolds are included under `connectors/` and `data_sources/`; install optional dependencies only when you are ready to complete those connections:
+Supported source type values are `postgres`, `redshift`, `snowflake`, `bigquery`, and `mongodb`. The canonical connector architecture lives in `data_sources/`; `connectors/` remains as a backward-compatible wrapper package. Redshift is implemented with SQLAlchemy. Snowflake, BigQuery, and MongoDB connector scaffolds are included with clear optional dependency guidance:
 
 ```powershell
 pip install -r requirements-snowflake.txt
 pip install -r requirements-bigquery.txt
+pip install -r requirements-mongodb.txt
 ```
 
 ## Database Initialization
@@ -303,6 +334,23 @@ Run the dashboard:
 ```powershell
 python -m streamlit run dashboard/app.py
 ```
+
+Run the FastAPI backend:
+
+```powershell
+uvicorn api.app:app --reload
+```
+
+Run the new Next.js frontend:
+
+```powershell
+cd frontend
+npm install
+Copy-Item .env.local.example .env.local
+npm run dev
+```
+
+Open the SaaS frontend at `http://localhost:3000`. The original Streamlit dashboard remains available at `http://localhost:8501`.
 
 Run unit tests:
 
@@ -345,13 +393,13 @@ docker compose run --rm runner python cli.py seed-demo
 docker compose run --rm runner python cli.py run-checks
 ```
 
-Start the dashboard and API:
+Start the Streamlit dashboard, FastAPI backend, and Next.js frontend:
 
 ```powershell
-docker compose up -d dashboard api
+docker compose up -d dashboard backend frontend
 ```
 
-Open Streamlit at `http://localhost:8501` and FastAPI at `http://localhost:8000`. Docker exposes PostgreSQL on host port `5433`.
+Open Streamlit at `http://localhost:8501`, FastAPI at `http://localhost:8000`, and the Next.js frontend at `http://localhost:3000`. Docker exposes PostgreSQL on host port `5433`.
 
 ## Optional Apache Airflow Orchestration
 
@@ -428,16 +476,108 @@ Open API docs:
 http://127.0.0.1:8000/docs
 ```
 
-Endpoints include:
+API authentication is enabled by default for data endpoints:
+
+```env
+API_AUTH_ENABLED=true
+API_TOKEN=change_me
+API_TOKEN_HEADER=X-API-Key
+```
+
+Send the token with protected requests:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/runs -Headers @{"X-API-Key"="change_me"}
+```
+
+Public endpoints:
 
 - `GET /health`
-- `GET /runs`
-- `GET /runs/latest`
-- `GET /results`
-- `GET /results/{run_id}`
-- `GET /issues/{run_id}`
-- `GET /alerts`
-- `PATCH /alerts/{alert_id}/resolve`
+- `GET /ready`
+- `GET /api/v1/health`
+
+Versioned protected endpoints include:
+
+- `GET /api/v1/runs?limit=100&offset=0`
+- `GET /api/v1/runs/latest`
+- `GET /api/v1/results?run_id=1&dataset_name=orders&status=FAIL&severity=HIGH`
+- `GET /api/v1/results/{run_id}`
+- `GET /api/v1/issues/{run_id}`
+- `GET /api/v1/alerts?is_resolved=false`
+- `PATCH /api/v1/alerts/{alert_id}/resolve`
+- `GET /api/v1/sla`
+- `GET /api/v1/lineage`
+- `GET /api/v1/profiling`
+- `GET /api/v1/rules`
+- `GET /api/v1/audit-logs`
+- `POST /api/v1/checks/run`
+
+Legacy paths such as `/runs` and `/alerts` remain available temporarily for backward compatibility.
+
+## Next.js SaaS Frontend
+
+The new frontend lives in `frontend/` and is intentionally separate from the existing Streamlit dashboard. It currently includes:
+
+- Username/password login backed by the `data_quality_users` table and signed dashboard session tokens
+- Enterprise app shell with fixed sidebar, topbar, breadcrumbs, environment badge, version badge, and user menu
+- Executive dashboard with KPI cards, Recharts trends, alert severity, SLA distribution, degraded datasets, and critical issues
+- Alert Operations with triage tabs, filters, alert cards, lifecycle actions, optimistic resolve, timeline, and TanStack Table
+- Quality Explorer, SLA Command Center, Data Lineage, Rules Studio, Data Profiling Workbench, and Admin Control Center pages
+- Data Remediation Center for open issues, suggested fixes, cleaning jobs, pending approvals, change history, and false positives
+- Admin subpages for User Management, Setup Wizard, Notification Center, and Audit Logs
+- Reusable enterprise UI components under `frontend/components/ui-custom/`
+- Reusable data grid components under `frontend/components/data-table/`
+- Reusable chart components under `frontend/components/charts/`
+
+Configure local frontend values in `frontend/.env.local`:
+
+```env
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+NEXT_PUBLIC_USER_NAME=admin
+NEXT_PUBLIC_USER_ROLE=admin
+```
+
+Run `python database/init_db.py`, start FastAPI, then sign in at `http://localhost:3000/login`. If no users exist yet, the backend creates the bootstrap admin from `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD`. Admin users can create analyst and viewer accounts from `Administration > User Management`.
+
+### Data Remediation Center
+
+The Next.js frontend includes a remediation workflow at `/remediation`.
+
+Supported workflow:
+
+- Review cleanable records from `data_quality_issue_details`
+- View suggested cleaning actions based on check type and reason
+- Preview cleaning actions before any source update
+- Create cleaning jobs with approval requirements
+- Admin users can assign work, approve jobs, execute jobs, and roll back jobs
+- Analysts can propose jobs and execute approved jobs
+- Data analysts see only alerts, issues, and jobs assigned to their username
+- Data engineers can create jobs and execute approved jobs without admin-only approval or assignment permissions
+- Viewer role can inspect issues only
+- Every operational action is logged to `audit_logs`
+- Source changes are recorded in `data_cleaning_change_log` with before/after values
+
+Supported cleaning actions include `fill_missing_value`, `replace_value`, `trim_whitespace`, `lowercase`, `uppercase`, `regex_replace`, `map_to_allowed_value`, `cap_to_min`, `cap_to_max`, `flag_duplicate`, `mark_as_exception`, `mark_as_false_positive`, and `assign_to_owner`.
+
+Safety policy is configured in `config/data_cleaning_policy.yaml`. Recommended production practices:
+
+- Use database backups before enabling source updates.
+- Restrict source database write permissions to the smallest required scope.
+- Require approval for all high-risk actions.
+- Test remediation in staging before production.
+- Keep `allow_delete_rows=false`; delete operations are intentionally not implemented from the dashboard.
+
+Local frontend commands:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+npm run build
+npm run lint
+```
+
+Screenshot placeholders live under `docs/screenshots/`; refresh them after running the frontend with real monitoring data.
 
 ## Example Rules
 
@@ -488,6 +628,8 @@ Supported rule types:
 - `custom_rules.email_domains`
 - `global_rules.anomaly_detection`
 - `global_rules.data_drift_detection`
+- `global_rules.schema_drift_detection`
+- `global_rules.volume_anomaly_detection`
 
 Example drift configuration:
 
@@ -499,7 +641,21 @@ global_rules:
     mean_change_threshold_percent: 25
     std_change_threshold_percent: 30
     psi_threshold: 0.2
+
+  schema_drift_detection:
+    enabled: true
+    severity: HIGH
+
+  volume_anomaly_detection:
+    enabled: true
+    baseline_runs: 5
+    change_threshold_percent: 40
+    severity: HIGH
 ```
+
+Schema drift detection stores source-table column snapshots in `data_schema_snapshots`. The first run saves a baseline; later runs flag added columns, removed columns, data type changes, nullability changes, and column order changes. Results are saved as normal `schema_drift_check` rows and shown in the dashboard Check Results page.
+
+Row volume anomaly detection stores dataset row counts in `data_volume_history`. The first run saves a baseline; later runs compare the current row count with the recent historical average and fail when the absolute percent change exceeds the configured threshold. The dashboard includes a `Row Volume` page with row count trends and anomaly status.
 
 ## SLA Tracking
 
@@ -620,6 +776,7 @@ Dashboard sections:
 - Issue Details
 - Alerts
 - Data Profiling
+- Rules Catalog
 - Data Lineage
 - SLA Tracking
 - Setup Wizard
@@ -631,14 +788,18 @@ Dashboard capabilities:
 - Use grouped enterprise sidebar navigation
 - Switch light/dark theme from `.env`
 - Rebrand app name, company name, colors, logo, and favicon from `.env`
+- Trigger checks from the dashboard as admin or analyst
 - View quality score trends
 - View failed checks by dataset and check type
+- Browse active YAML rules with filters, search, raw YAML view, and CSV export
 - View issue severity distribution
 - Track dataset SLA compliance over time
 - Assign alert owners, assignees, and resolution notes
 - Require login and allow logout when dashboard auth is enabled
 - Resolve alerts
-- Export filtered reports to CSV and Excel
+- Review escalated alerts and escalation status
+- Review admin-only audit logs for dashboard and API actions
+- Export filtered CSV files plus executive Excel/PDF reports
 
 ## Dashboard Screenshots
 
@@ -671,6 +832,7 @@ Dashboard capabilities:
 - [Configuration](docs/configuration.md)
 - [Rules Guide](docs/rules_guide.md)
 - [Dashboard Guide](docs/dashboard_guide.md)
+- [API Guide](docs/api_guide.md)
 - [Notifications](docs/notifications.md)
 - [Docker Setup](docs/docker_setup.md)
 - [Troubleshooting](docs/troubleshooting.md)
