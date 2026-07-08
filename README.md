@@ -818,7 +818,7 @@ Dashboard capabilities:
 ![Alerts](docs/screenshots/remediation.png)
 
 ### Data Profiling
-![Data Profiling](docs/screenshots/dat-profiling.png)
+![Data Profiling](docs/screenshots/data-profiling.png)
 
 ### Quality Explorer
 ![Quality Explorer](docs/screenshots/quality.png)
