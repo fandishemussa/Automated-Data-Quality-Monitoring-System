@@ -15,6 +15,12 @@ analyst:
     - resolve_alerts
     - export_reports
 
+data_engineer:
+  permissions:
+    - view_dashboard
+    - resolve_alerts
+    - export_reports
+
 viewer:
   permissions:
     - view_dashboard

@@ -133,6 +133,14 @@ global_rules:
     mean_change_threshold_percent: 25
     std_change_threshold_percent: 30
     psi_threshold: 0.2
+  schema_drift_detection:
+    enabled: true
+    severity: HIGH
+  volume_anomaly_detection:
+    enabled: true
+    baseline_runs: 5
+    change_threshold_percent: 40
+    severity: HIGH
 
 quality_thresholds:
   critical: 95

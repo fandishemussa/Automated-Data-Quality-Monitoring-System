@@ -52,6 +52,33 @@ def create_redshift_engine() -> Engine:
     return create_engine(database_url)
 
 
+class RedshiftConnector:
+    """Canonical Amazon Redshift source connector."""
+
+    def load_table(self, table_name: str) -> pd.DataFrame:
+        """Load a Redshift table."""
+
+        return load_redshift_table(table_name)
+
+    def get_table_names(self) -> list[str]:
+        """Return Redshift table names."""
+
+        return get_redshift_table_names()
+
+    def get_table_description(self, table_name: str) -> pd.DataFrame:
+        """Return Redshift table metadata."""
+
+        return get_redshift_table_description(table_name)
+
+    def test_connection(self) -> bool:
+        """Return whether Redshift can be reached."""
+
+        engine = create_redshift_engine()
+        with engine.begin() as connection:
+            connection.execute(text("SELECT 1"))
+        return True
+
+
 def load_redshift_table(table_name: str) -> pd.DataFrame:
     """Load all rows from a validated Redshift table."""
 
@@ -86,7 +113,7 @@ def get_redshift_table_description(table_name: str) -> pd.DataFrame:
     engine = create_redshift_engine()
     schema = _redshift_schema()
     query = text("""
-        SELECT column_name, data_type, is_nullable
+        SELECT column_name, data_type, is_nullable, ordinal_position
         FROM information_schema.columns
         WHERE table_schema = :schema
           AND table_name = :table_name

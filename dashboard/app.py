@@ -1,5 +1,6 @@
 import sys
 import json
+import subprocess
 from datetime import datetime
 from html import escape
 from io import BytesIO
@@ -18,8 +19,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from auth.dashboard_auth import clear_dashboard_login_state, require_dashboard_login
+from dashboard.actions import run_checks_subprocess
+from dashboard.permissions import (
+    can_edit_alerts_for_role,
+    can_export_reports,
+    can_resolve_alerts_for_role,
+    can_run_checks,
+)
 from data_sources.postgres_connector import create_monitor_engine
 from lineage.lineage_service import get_all_lineage_edges, get_table_lineage
+from reports.export_reports import export_run_to_excel, export_run_to_pdf
+from rules.rules_catalog import (
+    flatten_rules_for_display,
+    load_rules_catalog,
+    rules_to_yaml,
+)
 from ui.charts import (
     apply_enterprise_chart_theme,
     score_band_color_scale,
@@ -47,6 +61,7 @@ from ui.theme import (
 )
 from utils.logger import get_logger
 from utils.config_validator import validate_config
+from utils.audit_logger import log_audit_event
 
 
 BRAND = get_brand_config()
@@ -98,6 +113,10 @@ DISPLAY_COLUMN_NAMES = {
     "alert_state": "Alert State",
     "resolution_notes": "Resolution Notes",
     "resolved_at": "Resolved At",
+    "sla_due_at": "SLA Due At",
+    "escalation_status": "Escalation Status",
+    "escalated_at": "Escalated At",
+    "escalation_level": "Escalation Level",
     "created_at": "Created At",
     "column": "Column",
     "data_type": "Data Type",
@@ -117,7 +136,47 @@ DISPLAY_COLUMN_NAMES = {
     "max_critical_issues": "Critical Limit",
     "actual_failed_checks": "Failed Checks",
     "max_failed_checks": "Failed Limit",
+    "row_count": "Row Count",
+    "baseline_row_count": "Baseline Row Count",
+    "percent_change": "Percent Change",
+    "rule_type": "Rule Type",
+    "rule_config": "Rule Config",
+    "enabled": "Enabled",
+    "event_type": "Event Type",
+    "username": "Username",
+    "role": "Role",
+    "entity_type": "Entity Type",
+    "entity_id": "Entity ID",
+    "old_value": "Old Value",
+    "new_value": "New Value",
+    "ip_address": "IP Address",
 }
+
+
+def dashboard_username():
+    """Return the current dashboard username for audit events."""
+
+    return st.session_state.get("dashboard_authenticated_user", "anonymous")
+
+
+def log_dashboard_event(
+    event_type,
+    entity_type=None,
+    entity_id=None,
+    old_value=None,
+    new_value=None,
+) -> bool:
+    """Record a dashboard audit event with current user context."""
+
+    return log_audit_event(
+        event_type=event_type,
+        username=dashboard_username(),
+        role=current_user_role(),
+        entity_type=entity_type,
+        entity_id=entity_id,
+        old_value=old_value,
+        new_value=new_value,
+    )
 
 
 def load_query(query, table_name):
@@ -199,6 +258,17 @@ def load_sla_results():
     )
 
 
+def load_audit_logs():
+    return load_query(
+        """
+        SELECT *
+        FROM audit_logs
+        ORDER BY created_at DESC, id DESC;
+        """,
+        "audit_logs",
+    )
+
+
 def update_alert(
     alert_id,
     alert_type,
@@ -271,6 +341,17 @@ def load_profile_results():
     )
 
 
+def load_volume_history():
+    return load_query(
+        """
+        SELECT *
+        FROM data_volume_history
+        ORDER BY run_id DESC, id DESC;
+        """,
+        "data_volume_history",
+    )
+
+
 def load_lineage_edges():
     """Load lineage edges from config/lineage.yaml for dashboard display."""
 
@@ -292,6 +373,20 @@ def load_lineage_edges():
     ]
 
     return pd.DataFrame(edges, columns=columns)
+
+
+def load_dashboard_rules_catalog():
+    """Load active rules and flatten them for dashboard display."""
+
+    try:
+        rules = load_rules_catalog()
+        rows = flatten_rules_for_display(rules)
+    except Exception:
+        logger.exception("Could not load rules catalog.")
+        st.warning("Could not load active rules from config/rules.yaml.")
+        return {}, pd.DataFrame()
+
+    return rules, pd.DataFrame(rows)
 
 
 def unique_options(df, column):
@@ -423,13 +518,25 @@ def current_user_role():
 def can_edit_alerts():
     """Return whether the current role can edit alerts."""
 
-    return current_user_role() == "admin"
+    return can_edit_alerts_for_role(current_user_role())
 
 
 def can_resolve_alerts():
     """Return whether the current role can resolve alerts."""
 
-    return current_user_role() in {"admin", "analyst"}
+    return can_resolve_alerts_for_role(current_user_role())
+
+
+def can_export_current_reports():
+    """Return whether the current role can export executive reports."""
+
+    return can_export_reports(current_user_role())
+
+
+def can_run_dashboard_checks():
+    """Return whether the current role can trigger checks."""
+
+    return can_run_checks(current_user_role())
 
 
 def filter_sla_violations(sla_df):
@@ -836,6 +943,35 @@ def build_drift_summary(results_df, details_df):
     return pd.DataFrame(rows)
 
 
+def build_schema_drift_summary(details_df):
+    """Build a readable schema drift summary from issue detail rows."""
+
+    if details_df.empty or "check_type" not in details_df.columns:
+        return pd.DataFrame()
+
+    schema_details = details_df[details_df["check_type"] == "schema_drift_check"]
+    rows = []
+
+    for _, detail in schema_details.iterrows():
+        payload = parse_json_object(detail.get("sample_row"))
+        previous_schema = payload.get("previous_schema") or {}
+        current_schema = payload.get("current_schema") or {}
+        rows.append({
+            "dataset_name": detail.get("dataset_name"),
+            "column_name": detail.get("column_name"),
+            "change_type": payload.get("change_type"),
+            "previous_data_type": previous_schema.get("data_type"),
+            "current_data_type": current_schema.get("data_type"),
+            "previous_nullable": previous_schema.get("is_nullable"),
+            "current_nullable": current_schema.get("is_nullable"),
+            "previous_position": previous_schema.get("ordinal_position"),
+            "current_position": current_schema.get("ordinal_position"),
+            "reason": detail.get("reason"),
+        })
+
+    return pd.DataFrame(rows)
+
+
 def build_sla_trend_frame(sla_df):
     """Prepare SLA pass-rate trend data by run."""
 
@@ -1038,6 +1174,19 @@ def render_csv_download(container, label, df, stem, context, key):
         mime="text/csv",
         key=key,
         disabled=export_df.empty,
+        on_click=log_dashboard_event,
+        args=(
+            "REPORT_EXPORTED",
+            "report",
+            stem,
+            None,
+            {
+                "file_name": file_name,
+                "format": "csv",
+                "row_count": len(export_df),
+                "run_id": run_id,
+            },
+        ),
     )
 
 
@@ -1074,6 +1223,81 @@ def render_dashboard_exports(context):
 
     st.sidebar.divider()
     with st.sidebar.expander("Downloads", expanded=False) as export_panel:
+        if not can_export_current_reports():
+            export_panel.info("Your current role can view reports but cannot export them.")
+            return
+
+        selected_run_id = context.get("selected_run_id")
+        timestamp = context.get("export_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S"))
+
+        try:
+            executive_excel = export_run_to_excel(selected_run_id)
+            excel_file_name = build_export_filename(
+                "executive_report",
+                selected_run_id,
+                "xlsx",
+                timestamp,
+            )
+            export_panel.download_button(
+                label="Download Excel Report",
+                data=executive_excel,
+                file_name=excel_file_name,
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                key="download_executive_excel_report",
+                on_click=log_dashboard_event,
+                args=(
+                    "REPORT_EXPORTED",
+                    "report",
+                    "executive_excel_report",
+                    None,
+                    {
+                        "file_name": excel_file_name,
+                        "format": "xlsx",
+                        "run_id": selected_run_id,
+                    },
+                ),
+            )
+        except Exception:
+            logger.exception("Could not build executive Excel report.")
+            export_panel.info("Excel executive report is unavailable right now. Please check logs/app.log.")
+
+        try:
+            executive_pdf = export_run_to_pdf(selected_run_id)
+            pdf_file_name = build_export_filename(
+                "executive_summary",
+                selected_run_id,
+                "pdf",
+                timestamp,
+            )
+            export_panel.download_button(
+                label="Download PDF Executive Summary",
+                data=executive_pdf,
+                file_name=pdf_file_name,
+                mime="application/pdf",
+                key="download_executive_pdf_report",
+                on_click=log_dashboard_event,
+                args=(
+                    "REPORT_EXPORTED",
+                    "report",
+                    "executive_pdf_summary",
+                    None,
+                    {
+                        "file_name": pdf_file_name,
+                        "format": "pdf",
+                        "run_id": selected_run_id,
+                    },
+                ),
+            )
+        except ImportError as exc:
+            export_panel.info(str(exc))
+        except Exception:
+            logger.exception("Could not build executive PDF report.")
+            export_panel.info("PDF executive summary is unavailable right now. Please check logs/app.log.")
+
+        export_panel.divider()
         render_csv_download(
             export_panel,
             "Check results CSV",
@@ -1142,6 +1366,18 @@ def render_dashboard_exports(context):
                 "spreadsheetml.sheet"
             ),
             key="download_excel_report",
+            on_click=log_dashboard_event,
+            args=(
+                "REPORT_EXPORTED",
+                "report",
+                "excel_report",
+                None,
+                {
+                    "file_name": file_name,
+                    "format": "xlsx",
+                    "run_id": context.get("selected_run_id", "all"),
+                },
+            ),
         )
 
 
@@ -1254,6 +1490,17 @@ def render_alert_resolution_cards(open_alerts):
                         st.warning("Confirm critical alert resolution before saving.")
                         return
                     if resolve_alert(alert_id, assigned_to, resolution_notes):
+                        log_dashboard_event(
+                            "ALERT_RESOLVED",
+                            entity_type="alert",
+                            entity_id=alert_id,
+                            old_value=alert.to_dict(),
+                            new_value={
+                                "is_resolved": True,
+                                "assigned_to": assigned_to,
+                                "resolution_notes": resolution_notes,
+                            },
+                        )
                         st.success(f"Alert #{alert_id} marked as resolved.")
                         st.rerun()
 
@@ -1263,6 +1510,7 @@ def render_overview(context):
         "Executive Summary",
         "A management view of quality score, SLA health, critical issues, and open alerts.",
     )
+    render_run_checks_action("overview")
     render_metrics(
         context["latest_run"],
         context["latest_alerts_df"],
@@ -1324,6 +1572,77 @@ def render_overview(context):
         render_issues_by_severity(context["filtered_results"])
 
 
+def render_run_checks_action(location_key):
+    """Render a permission-aware dashboard action to trigger checks."""
+
+    flash_key = "dashboard_run_checks_flash"
+    if flash_key in st.session_state:
+        flash = st.session_state.pop(flash_key)
+        if flash.get("success"):
+            st.success(flash.get("message", "Data quality checks completed."))
+        else:
+            st.error(flash.get("message", "Data quality checks failed."))
+        if flash.get("stdout"):
+            with st.expander("Command output summary"):
+                st.code(flash["stdout"])
+        if flash.get("stderr"):
+            with st.expander("Error output"):
+                st.code(flash["stderr"])
+
+    if not can_run_dashboard_checks():
+        st.caption("Your current role can view monitoring runs but cannot trigger checks.")
+        return
+
+    st.warning("This will execute data quality checks and may take some time.")
+    confirm = st.checkbox(
+        "I understand and want to run checks now.",
+        key=f"confirm_run_checks_{location_key}",
+    )
+
+    if st.button(
+        "Run Checks Now",
+        key=f"run_checks_now_{location_key}",
+        disabled=not confirm,
+        type="primary",
+    ):
+        log_dashboard_event(
+            "CHECKS_TRIGGERED_FROM_DASHBOARD",
+            entity_type="monitoring_run",
+            entity_id="manual_dashboard_trigger",
+        )
+        with st.spinner("Running data quality checks..."):
+            try:
+                result = run_checks_subprocess(PROJECT_ROOT, timeout_seconds=600)
+            except subprocess.TimeoutExpired:
+                logger.exception("Dashboard-triggered checks timed out.")
+                st.session_state[flash_key] = {
+                    "success": False,
+                    "message": "Data quality checks timed out. Check logs/app.log.",
+                    "stdout": "",
+                    "stderr": "",
+                }
+            except Exception as exc:
+                logger.exception("Dashboard-triggered checks failed to start.")
+                st.session_state[flash_key] = {
+                    "success": False,
+                    "message": f"Could not start checks: {exc}",
+                    "stdout": "",
+                    "stderr": "",
+                }
+            else:
+                st.session_state[flash_key] = {
+                    "success": result["success"],
+                    "message": (
+                        "Data quality checks completed. Dashboard data has been refreshed."
+                        if result["success"]
+                        else "Data quality checks did not complete successfully."
+                    ),
+                    "stdout": result.get("stdout", ""),
+                    "stderr": result.get("stderr", ""),
+                }
+            st.rerun()
+
+
 def render_check_results(context):
     section_header(
         "Check Results",
@@ -1354,7 +1673,7 @@ def render_check_results(context):
         )
         st.markdown(f"{status_html}<br>{severity_html}", unsafe_allow_html=True)
 
-    tabs = st.tabs(["All Results", "Failed", "Critical", "Anomaly & Drift"])
+    tabs = st.tabs(["All Results", "Failed", "Critical", "Anomaly & Drift", "Schema Drift"])
 
     with tabs[0]:
         show_dataframe(
@@ -1431,6 +1750,49 @@ def render_check_results(context):
             with st.expander("View anomaly and drift examples"):
                 show_dataframe(statistical_details)
 
+    with tabs[4]:
+        if "check_type" in context["filtered_results"].columns:
+            schema_results = context["filtered_results"][
+                context["filtered_results"]["check_type"] == "schema_drift_check"
+            ]
+        else:
+            schema_results = context["filtered_results"].iloc[0:0].copy()
+
+        show_dataframe(
+            schema_results,
+            columns=[
+                "dataset_name",
+                "check_type",
+                "rule",
+                "total_rows",
+                "failed_rows",
+                "failure_rate",
+                "status",
+                "severity",
+                "run_time",
+            ],
+            empty_message="No schema drift checks found for this selection.",
+        )
+
+        schema_summary = build_schema_drift_summary(context["filtered_details"])
+        st.subheader("Schema Changes")
+        show_dataframe(
+            schema_summary,
+            columns=[
+                "dataset_name",
+                "column_name",
+                "change_type",
+                "previous_data_type",
+                "current_data_type",
+                "previous_nullable",
+                "current_nullable",
+                "previous_position",
+                "current_position",
+                "reason",
+            ],
+            empty_message="No schema changes found for this selection.",
+        )
+
 
 def render_issue_details(context):
     section_header(
@@ -1467,6 +1829,7 @@ def render_alerts(context):
     open_alerts = filter_unresolved_alerts(selected_alerts)
     resolved_alerts = filter_resolved_alerts(selected_alerts)
     critical_alerts = rows_matching(selected_alerts, "severity", "CRITICAL")
+    escalated_alerts = rows_matching(selected_alerts, "escalation_status", "ESCALATED")
 
     metric_cols = st.columns(4)
     with metric_cols[0]:
@@ -1495,12 +1858,32 @@ def render_alerts(context):
         unsafe_allow_html=True,
     )
 
-    tabs = st.tabs(["Open Alerts", "Resolved Alerts", "All Alerts", "Edit Alert", "Ownership"])
+    tabs = st.tabs(["Open Alerts", "Escalated Alerts", "Resolved Alerts", "All Alerts", "Edit Alert", "Ownership"])
 
     with tabs[0]:
         render_alert_resolution_cards(open_alerts)
 
     with tabs[1]:
+        show_dataframe(
+            escalated_alerts,
+            columns=[
+                "id",
+                "run_id",
+                "alert_type",
+                "severity",
+                "owner_team",
+                "assigned_to",
+                "message",
+                "sla_due_at",
+                "escalation_status",
+                "escalation_level",
+                "escalated_at",
+                "created_at",
+            ],
+            empty_message="No escalated alerts for this selection.",
+        )
+
+    with tabs[2]:
         show_dataframe(
             resolved_alerts,
             columns=[
@@ -1519,7 +1902,7 @@ def render_alerts(context):
             empty_message="No resolved alerts for this selection.",
         )
 
-    with tabs[2]:
+    with tabs[3]:
         show_dataframe(
             selected_alerts,
             columns=[
@@ -1533,13 +1916,17 @@ def render_alerts(context):
                 "message",
                 "is_resolved",
                 "resolution_notes",
+                "sla_due_at",
+                "escalation_status",
+                "escalation_level",
+                "escalated_at",
                 "resolved_at",
                 "created_at",
             ],
             empty_message="No alerts found for the selected run.",
         )
 
-    with tabs[3]:
+    with tabs[4]:
         section_header("Edit Alert", "Update assignment, ownership, severity, or resolution notes.")
 
         if "id" not in selected_alerts.columns:
@@ -1580,6 +1967,8 @@ def render_alerts(context):
 
         if isinstance(current_resolved, str):
             current_resolved = current_resolved.lower() in ["true", "1", "yes"]
+
+        old_alert_value = alert_row.to_dict()
 
         with st.form("edit_alert_form"):
             alert_type = st.text_input(
@@ -1646,10 +2035,26 @@ def render_alerts(context):
                     assigned_to=assigned_to,
                     resolution_notes=resolution_notes,
                 ):
+                    log_dashboard_event(
+                        "ALERT_EDITED",
+                        entity_type="alert",
+                        entity_id=selected_alert_id,
+                        old_value=old_alert_value,
+                        new_value={
+                            "alert_type": alert_type,
+                            "severity": severity,
+                            "message": message,
+                            "owner_team": owner_team,
+                            "owner_email": owner_email,
+                            "assigned_to": assigned_to,
+                            "resolution_notes": resolution_notes,
+                            "is_resolved": is_resolved,
+                        },
+                    )
                     st.success(f"Alert {selected_alert_id} updated successfully.")
                     st.rerun()
 
-    with tabs[4]:
+    with tabs[5]:
         section_header("Ownership", "Alert workload by owner team and assignee.")
         if selected_alerts.empty:
             empty_state("No ownership data", "No alerts are available for this selection.")
@@ -1697,6 +2102,278 @@ def render_data_profiling(context):
         ],
         empty_message="No profiling results found for this selection.",
     )
+
+
+def render_row_volume(context):
+    section_header(
+        "Row Volume",
+        "Monitor sudden row count drops and spikes across ingestion runs.",
+    )
+
+    volume_df = context.get("volume_df", pd.DataFrame()).copy()
+    selected_volume = context.get("filtered_volume", pd.DataFrame()).copy()
+
+    if volume_df.empty:
+        empty_state(
+            "No row volume history",
+            "Run monitoring checks to start building row volume baselines.",
+        )
+        return
+
+    selected_dataset = context.get("selected_dataset", "All")
+    history_df = filter_by_value(volume_df, "dataset_name", selected_dataset)
+
+    metric_cols = st.columns(4)
+    with metric_cols[0]:
+        metric_card("History Rows", len(history_df), "Current dataset filter", "info")
+    with metric_cols[1]:
+        fail_count = (
+            int((history_df["status"].fillna("").astype(str).str.upper() == "FAIL").sum())
+            if "status" in history_df.columns
+            else 0
+        )
+        metric_card("Anomalies", fail_count, "Historical failures", _count_status(fail_count))
+    with metric_cols[2]:
+        latest_count = (
+            history_df["row_count"].iloc[0]
+            if "row_count" in history_df.columns and not history_df.empty
+            else "N/A"
+        )
+        metric_card("Latest Row Count", latest_count, "Most recent selected row", "neutral")
+    with metric_cols[3]:
+        latest_change = (
+            history_df["percent_change"].iloc[0]
+            if "percent_change" in history_df.columns and not history_df.empty
+            else None
+        )
+        metric_card(
+            "Latest Change",
+            "N/A" if pd.isna(latest_change) else f"{float(latest_change):.1f}%",
+            "Vs baseline",
+            "neutral",
+        )
+
+    chart_df = history_df.copy()
+    if not chart_df.empty and {"run_id", "dataset_name", "row_count"}.issubset(chart_df.columns):
+        chart_df = chart_df.sort_values(["dataset_name", "run_id"])
+        chart_df["run_label"] = chart_df["run_id"].astype(str)
+        chart = alt.Chart(chart_df).mark_line(
+            strokeWidth=3,
+            point=alt.OverlayMarkDef(size=70, filled=True),
+        ).encode(
+            x=alt.X(
+                "run_label:N",
+                title="Run ID",
+                sort=list(chart_df["run_label"].drop_duplicates()),
+                axis=alt.Axis(labelAngle=0),
+            ),
+            y=alt.Y("row_count:Q", title="Row Count"),
+            color=alt.Color("dataset_name:N", title="Dataset"),
+            tooltip=[
+                alt.Tooltip("run_id:O", title="Run ID"),
+                alt.Tooltip("dataset_name:N", title="Dataset"),
+                alt.Tooltip("row_count:Q", title="Row Count", format=",.0f"),
+                alt.Tooltip("baseline_row_count:Q", title="Baseline", format=",.1f"),
+                alt.Tooltip("percent_change:Q", title="Change %", format=".1f"),
+                alt.Tooltip("status:N", title="Status"),
+                alt.Tooltip("severity:N", title="Severity"),
+            ],
+        )
+        st.altair_chart(apply_enterprise_chart_theme(chart, height=340), width="stretch")
+    else:
+        empty_state("No chartable volume data", "Row volume history is missing run, dataset, or row-count columns.")
+
+    st.subheader("Selected Run Volume Status")
+    show_dataframe(
+        selected_volume,
+        columns=[
+            "run_id",
+            "dataset_name",
+            "row_count",
+            "baseline_row_count",
+            "percent_change",
+            "status",
+            "severity",
+            "created_at",
+        ],
+        empty_message="No row volume rows found for this selection.",
+    )
+
+    st.subheader("Historical Volume Anomalies")
+    anomalies = history_df
+    if "status" in anomalies.columns:
+        anomalies = anomalies[anomalies["status"].fillna("").astype(str).str.upper() == "FAIL"]
+    else:
+        anomalies = anomalies.iloc[0:0].copy()
+    show_dataframe(
+        anomalies,
+        columns=[
+            "run_id",
+            "dataset_name",
+            "row_count",
+            "baseline_row_count",
+            "percent_change",
+            "status",
+            "severity",
+            "created_at",
+        ],
+        empty_message="No row volume anomalies found for this dataset selection.",
+    )
+
+
+def render_rules_catalog(context):
+    section_header(
+        "Rules Catalog",
+        "Browse active YAML rules without opening configuration files.",
+    )
+
+    rules_df = context.get("rules_catalog_df", pd.DataFrame()).copy()
+    raw_rules = context.get("rules_catalog_raw", {})
+
+    if rules_df.empty:
+        empty_state(
+            "No rules found",
+            "Add rules to config/rules.yaml and refresh the dashboard.",
+        )
+        return
+
+    metric_cols = st.columns(4)
+    with metric_cols[0]:
+        metric_card("Total Rules", len(rules_df), "Flattened active rows", "info")
+    with metric_cols[1]:
+        metric_card("Datasets", rules_df["dataset_name"].nunique(), "Including GLOBAL", "neutral")
+    with metric_cols[2]:
+        metric_card("Rule Types", rules_df["rule_type"].nunique(), "Configured checks", "neutral")
+    with metric_cols[3]:
+        disabled_count = (
+            int((rules_df["enabled"].astype(str).str.lower() == "false").sum())
+            if "enabled" in rules_df.columns
+            else 0
+        )
+        metric_card("Disabled", disabled_count, "Explicitly disabled", _count_status(disabled_count))
+
+    chart_cols = st.columns(2)
+    with chart_cols[0]:
+        by_dataset = (
+            rules_df.groupby("dataset_name")
+            .size()
+            .reset_index(name="rule_count")
+            .sort_values("rule_count", ascending=False)
+        )
+        chart = alt.Chart(by_dataset).mark_bar(
+            cornerRadiusTopRight=5,
+            cornerRadiusBottomRight=5,
+        ).encode(
+            y=alt.Y("dataset_name:N", title=None, sort="-x"),
+            x=alt.X("rule_count:Q", title="Rules", axis=alt.Axis(format="d")),
+            color=alt.value(BRAND.primary_color),
+            tooltip=[
+                alt.Tooltip("dataset_name:N", title="Dataset"),
+                alt.Tooltip("rule_count:Q", title="Rules"),
+            ],
+        )
+        st.altair_chart(apply_enterprise_chart_theme(chart, height=280), width="stretch")
+
+    with chart_cols[1]:
+        by_type = (
+            rules_df.groupby("rule_type")
+            .size()
+            .reset_index(name="rule_count")
+            .sort_values("rule_count", ascending=False)
+            .head(12)
+        )
+        chart = alt.Chart(by_type).mark_bar(
+            cornerRadiusTopRight=5,
+            cornerRadiusBottomRight=5,
+        ).encode(
+            y=alt.Y("rule_type:N", title=None, sort="-x"),
+            x=alt.X("rule_count:Q", title="Rules", axis=alt.Axis(format="d")),
+            color=alt.value(BRAND.accent_color),
+            tooltip=[
+                alt.Tooltip("rule_type:N", title="Rule Type"),
+                alt.Tooltip("rule_count:Q", title="Rules"),
+            ],
+        )
+        st.altair_chart(apply_enterprise_chart_theme(chart, height=280), width="stretch")
+
+    filter_cols = st.columns(4)
+    with filter_cols[0]:
+        selected_dataset = st.selectbox(
+            "Catalog Dataset",
+            options=["All"] + unique_options(rules_df, "dataset_name"),
+        )
+    with filter_cols[1]:
+        selected_rule_type = st.selectbox(
+            "Rule Type",
+            options=["All"] + unique_options(rules_df, "rule_type"),
+        )
+    with filter_cols[2]:
+        selected_column = st.selectbox(
+            "Column",
+            options=["All"] + unique_options(rules_df, "column_name"),
+        )
+    with filter_cols[3]:
+        search_text = st.text_input("Search Rules", value="")
+
+    filtered_rules = filter_by_value(rules_df, "dataset_name", selected_dataset)
+    filtered_rules = filter_by_value(filtered_rules, "rule_type", selected_rule_type)
+    filtered_rules = filter_by_value(filtered_rules, "column_name", selected_column)
+
+    if search_text.strip():
+        search_lower = search_text.strip().lower()
+        search_frame = filtered_rules.fillna("").astype(str)
+        filtered_rules = filtered_rules[
+            search_frame.apply(
+                lambda row: row.str.lower().str.contains(search_lower, regex=False).any(),
+                axis=1,
+            )
+        ]
+
+    export_name = build_export_filename(
+        "rules_catalog",
+        "all",
+        "csv",
+        context.get("export_timestamp", datetime.now().strftime("%Y%m%d_%H%M%S")),
+    )
+    st.download_button(
+        label="Download rules catalog CSV",
+        data=dataframe_to_csv_bytes(filtered_rules),
+        file_name=export_name,
+        mime="text/csv",
+        key="download_rules_catalog_csv",
+        disabled=filtered_rules.empty,
+        on_click=log_dashboard_event,
+        args=(
+            "REPORT_EXPORTED",
+            "report",
+            "rules_catalog",
+            None,
+            {
+                "file_name": export_name,
+                "format": "csv",
+                "row_count": len(filtered_rules),
+            },
+        ),
+    )
+
+    show_dataframe(
+        filtered_rules,
+        columns=[
+            "dataset_name",
+            "rule_type",
+            "column_name",
+            "severity",
+            "enabled",
+            "rule_config",
+        ],
+        empty_message="No rules match the selected filters.",
+        height=520,
+    )
+
+    st.info("Rule editing and approval workflow is a Pro/Enterprise roadmap feature.")
+
+    with st.expander("View raw YAML", expanded=False):
+        st.code(rules_to_yaml(raw_rules), language="yaml")
 
 
 def render_data_lineage(context):
@@ -1954,6 +2631,99 @@ def render_run_history(context):
     )
 
 
+def render_audit_logs(context):
+    """Render enterprise audit logs for admin users."""
+
+    section_header(
+        "Audit Logs",
+        "Review operational actions across dashboard and API workflows.",
+    )
+
+    if current_user_role() != "admin":
+        warning_state("Admin access required", "Audit Logs are visible only to admin users.")
+        return
+
+    audit_df = context.get("audit_logs_df", pd.DataFrame()).copy()
+
+    if audit_df.empty:
+        empty_state("No audit events found", "Operational audit events will appear here after user or API actions.")
+        return
+
+    filter_cols = st.columns(3)
+    with filter_cols[0]:
+        selected_event_type = st.selectbox(
+            "Event Type",
+            options=["All"] + unique_options(audit_df, "event_type"),
+        )
+    with filter_cols[1]:
+        selected_username = st.selectbox(
+            "Username",
+            options=["All"] + unique_options(audit_df, "username"),
+        )
+    with filter_cols[2]:
+        selected_entity_type = st.selectbox(
+            "Entity Type",
+            options=["All"] + unique_options(audit_df, "entity_type"),
+        )
+
+    filtered_audit = filter_by_value(audit_df, "event_type", selected_event_type)
+    filtered_audit = filter_by_value(filtered_audit, "username", selected_username)
+    filtered_audit = filter_by_value(filtered_audit, "entity_type", selected_entity_type)
+
+    if "created_at" in filtered_audit.columns:
+        created_values = pd.to_datetime(filtered_audit["created_at"], errors="coerce")
+        valid_dates = created_values.dropna()
+        if not valid_dates.empty:
+            min_date = valid_dates.min().date()
+            max_date = valid_dates.max().date()
+            selected_range = st.date_input(
+                "Date Range",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date,
+            )
+            if isinstance(selected_range, tuple) and len(selected_range) == 2:
+                start_date, end_date = selected_range
+                date_mask = (
+                    (created_values.dt.date >= start_date)
+                    & (created_values.dt.date <= end_date)
+                )
+                filtered_audit = filtered_audit[date_mask]
+
+    metric_cols = st.columns(4)
+    with metric_cols[0]:
+        metric_card("Audit Events", len(filtered_audit), "Current filters", "info")
+    with metric_cols[1]:
+        metric_card("Event Types", filtered_audit.get("event_type", pd.Series(dtype=str)).nunique(), "Distinct actions", "neutral")
+    with metric_cols[2]:
+        metric_card("Users", filtered_audit.get("username", pd.Series(dtype=str)).nunique(), "Actors", "neutral")
+    with metric_cols[3]:
+        latest_event = (
+            filtered_audit["created_at"].iloc[0]
+            if "created_at" in filtered_audit.columns and not filtered_audit.empty
+            else "N/A"
+        )
+        metric_card("Latest Event", latest_event, "Most recent", "info")
+
+    show_dataframe(
+        filtered_audit,
+        columns=[
+            "id",
+            "event_type",
+            "username",
+            "role",
+            "entity_type",
+            "entity_id",
+            "ip_address",
+            "created_at",
+            "old_value",
+            "new_value",
+        ],
+        empty_message="No audit logs match the selected filters.",
+        height=520,
+    )
+
+
 def render_setup_wizard(context):
     """Render setup guidance for first-time users."""
 
@@ -1963,6 +2733,11 @@ def render_setup_wizard(context):
     )
 
     if st.button("Refresh setup checks", key="refresh_setup_checks"):
+        log_dashboard_event(
+            "CONFIG_VALIDATED",
+            entity_type="configuration",
+            entity_id="dashboard_setup_wizard",
+        )
         st.rerun()
 
     try:
@@ -1990,6 +2765,9 @@ def render_setup_wizard(context):
         metric_card("FAIL", int(status_counts.get("FAIL", 0)), "Blocking checks", _count_status(status_counts.get("FAIL", 0)))
     with command_cols[3]:
         metric_card("Version", get_version(), "Current build", "info")
+
+    st.markdown("#### Run Checks")
+    render_run_checks_action("setup_wizard")
 
     st.markdown("#### Health Checklist")
 
@@ -2058,6 +2836,8 @@ def render_sidebar_navigation():
         ],
         "Governance": [
             ("Data Profiling", "Data Profiling"),
+            ("Row Volume", "Row Volume"),
+            ("Rules Catalog", "Rules Catalog"),
             ("SLA Tracking", "SLA Tracking"),
             ("Data Lineage", "Data Lineage"),
         ],
@@ -2066,6 +2846,9 @@ def render_sidebar_navigation():
             ("Run History", "Run History"),
         ],
     }
+    if current_user_role() == "admin":
+        navigation_groups["Admin"].append(("Audit Logs", "Audit Logs"))
+
     icons = {
         "Overview": "▣",
         "Check Results": "▥",
@@ -2079,6 +2862,9 @@ def render_sidebar_navigation():
         "Setup Wizards": "◫",
         "Governance": "◫"
     }
+    icons["Audit Logs"] = "A"
+    icons["Row Volume"] = "V"
+    icons["Rules Catalog"] = "R"
 
     query_page = st.query_params.get("page")
     all_pages = {
@@ -2124,6 +2910,7 @@ def build_sidebar_filters(
     details_df,
     alerts_df,
     profiles_df,
+    volume_df,
     sla_df,
     lineage_edges_df,
 ):
@@ -2145,6 +2932,11 @@ def build_sidebar_filters(
             unsafe_allow_html=True,
         )
         if st.sidebar.button("Logout", key="dashboard_logout", width="stretch"):
+            log_dashboard_event(
+                "USER_LOGOUT",
+                entity_type="dashboard_session",
+                entity_id=authenticated_user,
+            )
             clear_dashboard_login_state(st.session_state)
             st.rerun()
 
@@ -2158,12 +2950,14 @@ def build_sidebar_filters(
     run_details = filter_by_value(details_df, "run_id", selected_run_id)
     run_alerts = filter_by_value(alerts_df, "run_id", selected_run_id)
     run_profiles = filter_by_value(profiles_df, "run_id", selected_run_id)
+    run_volume = filter_by_value(volume_df, "run_id", selected_run_id)
     run_sla = filter_by_value(sla_df, "run_id", selected_run_id)
 
     dataset_options = sorted(set(
         unique_options(run_results, "dataset_name")
         + unique_options(run_details, "dataset_name")
         + unique_options(run_profiles, "dataset_name")
+        + unique_options(run_volume, "dataset_name")
         + unique_options(run_sla, "dataset_name")
         + lineage_table_options(lineage_edges_df)
     ))
@@ -2175,6 +2969,7 @@ def build_sidebar_filters(
     dataset_results = filter_by_value(run_results, "dataset_name", selected_dataset)
     dataset_details = filter_by_value(run_details, "dataset_name", selected_dataset)
     dataset_profiles = filter_by_value(run_profiles, "dataset_name", selected_dataset)
+    dataset_volume = filter_by_value(run_volume, "dataset_name", selected_dataset)
     dataset_sla = filter_by_value(run_sla, "dataset_name", selected_dataset)
 
     selected_status = st.sidebar.selectbox(
@@ -2235,6 +3030,7 @@ def build_sidebar_filters(
         "filtered_details": filtered_details,
         "filtered_alerts": filtered_alerts,
         "filtered_profiles": dataset_profiles,
+        "filtered_volume": dataset_volume,
         "filtered_sla": dataset_sla,
     }
 def inject_sidebar_nav_css() -> None:
@@ -2320,8 +3116,11 @@ def main():
     details_df = load_issue_details()
     alerts_df = load_alerts()
     profiles_df = load_profile_results()
+    volume_df = load_volume_history()
     sla_df = load_sla_results()
+    audit_logs_df = load_audit_logs()
     lineage_edges_df = load_lineage_edges()
+    rules_catalog_raw, rules_catalog_df = load_dashboard_rules_catalog()
 
     if runs_df.empty or "run_id" not in runs_df.columns:
         render_app_header(status="SETUP", last_refresh=datetime.now())
@@ -2330,6 +3129,11 @@ def main():
             "Run checks to generate the first monitoring run, then refresh this dashboard.",
         )
         st.code("python cli.py run-checks", language="powershell")
+        render_rules_catalog({
+            "rules_catalog_raw": rules_catalog_raw,
+            "rules_catalog_df": rules_catalog_df,
+            "export_timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+        })
         render_data_lineage({
             "lineage_edges_df": lineage_edges_df,
             "filtered_results": pd.DataFrame(),
@@ -2355,6 +3159,7 @@ def main():
         details_df,
         alerts_df,
         profiles_df,
+        volume_df,
         sla_df,
         lineage_edges_df,
     )
@@ -2364,8 +3169,12 @@ def main():
         "details_df": details_df,
         "alerts_df": alerts_df,
         "profiles_df": profiles_df,
+        "volume_df": volume_df,
         "sla_df": sla_df,
+        "audit_logs_df": audit_logs_df,
         "lineage_edges_df": lineage_edges_df,
+        "rules_catalog_raw": rules_catalog_raw,
+        "rules_catalog_df": rules_catalog_df,
         "latest_run": latest_run,
         "latest_alerts_df": latest_alerts_df,
         "latest_sla_df": latest_sla_df,
@@ -2380,10 +3189,13 @@ def main():
         "Issue Details": render_issue_details,
         "Alerts": render_alerts,
         "Data Profiling": render_data_profiling,
+        "Row Volume": render_row_volume,
+        "Rules Catalog": render_rules_catalog,
         "Data Lineage": render_data_lineage,
         "SLA Tracking": render_sla_tracking,
         "Setup Wizard": render_setup_wizard,
         "Run History": render_run_history,
+        "Audit Logs": render_audit_logs,
     }
     pages[filters["page"]](context)
     render_footer()

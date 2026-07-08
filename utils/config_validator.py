@@ -25,6 +25,8 @@ REQUIRED_MONITORING_TABLES = [
     "data_profile_results",
     "data_quality_sla_results",
     "data_lineage_edges",
+    "data_schema_snapshots",
+    "data_volume_history",
     "audit_logs",
 ]
 IGNORED_RULE_SECTIONS = {

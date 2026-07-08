@@ -23,7 +23,7 @@ docker compose run --rm runner python cli.py run-checks
 Start the apps:
 
 ```powershell
-docker compose up -d dashboard api
+docker compose up -d dashboard backend frontend
 ```
 
 Ports:
@@ -31,3 +31,4 @@ Ports:
 - PostgreSQL: `localhost:5433`
 - Streamlit: `http://localhost:8501`
 - FastAPI: `http://localhost:8000`
+- Next.js frontend: `http://localhost:3000`

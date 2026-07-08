@@ -54,7 +54,18 @@ Open `http://localhost:8501`.
 uvicorn api.app:app --reload
 ```
 
-Open `http://127.0.0.1:8000/docs`.
+Open `http://127.0.0.1:8000/docs`. Data endpoints are under `/api/v1` and use the `X-API-Key` header when `API_AUTH_ENABLED=true`.
+
+## Run The Next.js Frontend
+
+```powershell
+cd frontend
+npm install
+Copy-Item .env.local.example .env.local
+npm run dev
+```
+
+Open `http://localhost:3000`. The Streamlit dashboard remains available at `http://localhost:8501`.
 
 ## Docker
 
@@ -69,7 +80,7 @@ Then initialize, seed, and run checks with the runner:
 docker compose run --rm runner python cli.py init-db
 docker compose run --rm runner python cli.py seed-demo
 docker compose run --rm runner python cli.py run-checks
-docker compose up -d dashboard api
+docker compose up -d dashboard backend frontend
 ```
 
 ## Tests

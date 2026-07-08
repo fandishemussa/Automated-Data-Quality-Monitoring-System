@@ -1,0 +1,41 @@
+enabled: true
+require_approval_for_all: false
+allow_source_updates: true
+allow_delete_rows: false
+max_rows_per_job: 100
+
+allowed_actions:
+  - fill_missing_value
+  - replace_value
+  - trim_whitespace
+  - lowercase
+  - uppercase
+  - regex_replace
+  - map_to_allowed_value
+  - cap_to_min
+  - cap_to_max
+  - flag_duplicate
+  - mark_as_exception
+  - mark_as_false_positive
+  - assign_to_owner
+
+restricted_actions:
+  - delete_row
+  - bulk_update
+
+high_risk_actions:
+  - regex_replace
+  - bulk_update
+  - map_to_valid_foreign_key
+
+role_policy:
+  admin:
+    can_execute_without_approval: true
+  analyst:
+    can_execute_without_approval: false
+  data_analyst:
+    can_execute_without_approval: false
+  data_engineer:
+    can_execute_without_approval: false
+  viewer:
+    can_execute_without_approval: false

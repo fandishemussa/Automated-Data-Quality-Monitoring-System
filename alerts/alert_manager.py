@@ -121,6 +121,8 @@ def _ensure_alert_table_schema(connection) -> None:
             resolved_at TIMESTAMP,
             sla_due_at TIMESTAMP,
             escalation_status VARCHAR(50),
+            escalated_at TIMESTAMP,
+            escalation_level INT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """,
@@ -155,6 +157,14 @@ def _ensure_alert_table_schema(connection) -> None:
         """
         ALTER TABLE IF EXISTS data_quality_alerts
         ADD COLUMN IF NOT EXISTS escalation_status VARCHAR(50)
+        """,
+        """
+        ALTER TABLE IF EXISTS data_quality_alerts
+        ADD COLUMN IF NOT EXISTS escalated_at TIMESTAMP
+        """,
+        """
+        ALTER TABLE IF EXISTS data_quality_alerts
+        ADD COLUMN IF NOT EXISTS escalation_level INT
         """,
     ]
 

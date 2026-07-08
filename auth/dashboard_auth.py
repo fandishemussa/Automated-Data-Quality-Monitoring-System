@@ -10,6 +10,8 @@ from typing import Any, MutableMapping
 
 from dotenv import load_dotenv
 
+from utils.audit_logger import log_audit_event
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -224,6 +226,13 @@ def require_dashboard_login() -> bool:
                 )
             elif verify_dashboard_credentials(username, password):
                 mark_logged_in(st.session_state, username)
+                log_audit_event(
+                    "USER_LOGIN",
+                    username=username,
+                    role=st.session_state.get("dashboard_role", "admin"),
+                    entity_type="dashboard_session",
+                    entity_id=username,
+                )
                 st.rerun()
                 return True
             else:

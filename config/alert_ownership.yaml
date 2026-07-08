@@ -33,3 +33,13 @@ check_type_ownership:
   data_drift_check:
     owner_team: Analytics Engineering
     owner_email: analytics-engineering@example.com
+
+escalation:
+  CRITICAL:
+    after_hours: 4
+    escalation_level: 1
+    notify_team: Data Platform
+  HIGH:
+    after_hours: 24
+    escalation_level: 1
+    notify_team: Data Governance
