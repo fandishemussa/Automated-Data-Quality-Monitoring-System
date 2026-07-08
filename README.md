@@ -806,23 +806,25 @@ Dashboard capabilities:
 ### Overview
 ![Overview](docs/screenshots/overview.png)
 
-### Overview 1
-![Overview 1](docs/screenshots/overview1.png)
+### Schema Drift
+![Schema Drift](docs/screenshots/drift.png)
 
 ### Check Results
 ![Check Results](docs/screenshots/check-results.png)
 
 ### Alerts
 ![Alerts](docs/screenshots/alerts.png)
+### Data Remediation Center
+![Alerts](docs/screenshots/remediation.png)
 
-### Screen 4
-![Screen 4](docs/screenshots/screen4.png)
+### Data Profiling
+![Data Profiling](docs/screenshots/dat-profiling.png)
 
-### Screen 5
-![Screen 5](docs/screenshots/screen5.png)
+### Quality Explorer
+![Quality Explorer](docs/screenshots/quality.png)
 
-### Screen 6
-![Screen 6](docs/screenshots/screen6.png)
+### SLA Command Center
+![SLA Command Center](docs/screenshots/sla-command-center.png)
 
 ## Documentation
 
