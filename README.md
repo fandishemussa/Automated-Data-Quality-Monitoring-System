@@ -804,7 +804,7 @@ Dashboard capabilities:
 ## Dashboard Screenshots
 
 ### Overview
-![Overview](docs/screenshots/overview.png)
+![Overview](docs/screenshots/next-overview.png)
 
 ### Schema Drift
 ![Schema Drift](docs/screenshots/drift.png)
