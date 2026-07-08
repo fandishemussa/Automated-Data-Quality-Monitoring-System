@@ -865,8 +865,6 @@ The workflow in `.github/workflows/ci.yml` runs on push and pull request:
 The tests do not require PostgreSQL.
 
 ## Future Improvements
-
-- Add dashboard user roles and permissions
 - Complete Snowflake and BigQuery production connectors
 
 ## CV Bullet Points
